@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--    Copyright (c) 2026 Huawei Technologies Co., Ltd.
+        This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+        CANN Open Software License Agreement Version 2.0 (the "License").
+        Please refer to the License for details. You may not use this file except in compliance with the License.
+        THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+        INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+        See LICENSE in the root of the software repository for the full text of the License.
+-->
+
+<configuration>
+    <oatconfig>
+        <licensefile></licensefile>
+        <policylist>
+            <policy name="projectPolicy" desc="CANNBot repository default license policy">
+                <policyitem type="license" name="CANN-2.0" path=".*" filefilter="licenseFileNamePolicyFilter" desc="The repository default license is CANN-2.0; explicitly licensed components are excluded below."/>
+            </policy>
+        </policylist>
+        <filefilterlist>
+            <filefilter name="defaultFilter" desc="Files not checked by the root repository scan">
+                <filteritem type="filepath" name="vendor/cannbot-skills/.*" desc="Git submodule with its own license and OAT configuration."/>
+            </filefilter>
+            <filefilter name="defaultPolicyFilter" desc="Filters for compatibility and license header policies">
+            </filefilter>
+            <filefilter name="copyrightPolicyFilter" desc="Filters for copyright header policies">
+            </filefilter>
+            <filefilter name="licenseFileNamePolicyFilter" desc="Explicitly licensed components excluded from the repository default license policy">
+                <filteritem type="filepath" name="script/.*" desc="The npm installer is distributed under the MIT License in script/LICENSE."/>
+                <filteritem type="filepath" name="vendor/cannbot-skills/.*" desc="Git submodule distributed under its own repository license."/>
+            </filefilter>
+            <filefilter name="readmeFileNamePolicyFilter" desc="Filters for README file policies">
+            </filefilter>
+            <filefilter name="binaryFileTypePolicyFilter" desc="Filters for binary file policies">
+            </filefilter>
+        </filefilterlist>
+        <licensematcherlist>
+            <licensematcher name="CANN-2.0" desc="Text matcher for the repository default license">
+                <licensetext name="
+                    This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+                    CANN Open Software License Agreement Version 2.0 (the &quot;License&quot;).
+                    Please refer to the License for details. You may not use this file except in compliance with the License.
+                    THIS SOFTWARE IS PROVIDED ON AN &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+                    INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+                    See LICENSE in the root of the software repository for the full text of the License.
+                " desc=""/>
+            </licensematcher>
+        </licensematcherlist>
+    </oatconfig>
+</configuration>

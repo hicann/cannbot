@@ -1,0 +1,20 @@
+{
+  "name": "ops-direct-invoke",
+  "version": "1.2.5",
+  "description": "Ascend C Kernel 直调算子开发工作流，包含设计、实现、审查与性能验收。",
+  "author": { "name": "CANNBot" },
+  "homepage": "https://cann.cannbot.cn/plugin.html?id=ops-direct-invoke",
+  "repository": "https://gitcode.com/cann/cannbot",
+  "license": "CANN-2.0",
+  "keywords": ["cannbot", "ascend-c", "operator-development"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CANNBot 算子生成",
+    "shortDescription": "Ascend C 直调算子端到端开发工作流",
+    "longDescription": "通过专业 Agents 和 Skills 完成 Ascend C 直调算子的设计、实现、审查、测试与性能验收。",
+    "developerName": "CANNBot",
+    "category": "Productivity",
+    "capabilities": ["Skills", "Agents"],
+    "defaultPrompt": ["使用 ops-direct-invoke 为当前项目生成 Ascend C 直调算子。"]
+  }
+}

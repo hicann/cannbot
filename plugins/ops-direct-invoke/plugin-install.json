@@ -1,0 +1,17 @@
+{
+  "dependencies": [
+    {
+      "name": "asc-devkit",
+      "repository": "https://gitcode.com/cann/asc-devkit.git",
+      "ref": "master",
+      "expose": "asc-devkit",
+      "cleanMarkdownWithSkill": "ascendc-docs-search"
+    },
+    {
+      "name": "ops-tensor",
+      "repository": "https://gitcode.com/cann/ops-tensor.git",
+      "recursive": true,
+      "expose": "ops-tensor"
+    }
+  ]
+}

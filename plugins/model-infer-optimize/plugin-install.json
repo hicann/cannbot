@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    {
+      "name": "cann-recipes-infer",
+      "repository": "https://gitcode.com/cann/cann-recipes-infer.git",
+      "expose": "cann-recipes-infer"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "skillsRepository": "vendor/cannbot-skills",
+  "skills": [
+    "ops/ascendc-st-design"
+  ]
+}

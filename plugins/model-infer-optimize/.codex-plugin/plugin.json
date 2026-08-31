@@ -1,0 +1,20 @@
+{
+  "name": "model-infer-optimize",
+  "version": "1.0.6",
+  "description": "NPU 模型迁移与推理性能优化工作流。",
+  "author": { "name": "CANNBot" },
+  "homepage": "https://cann.cannbot.cn/plugin.html?id=model-infer-optimize",
+  "repository": "https://gitcode.com/cann/cannbot",
+  "license": "CANN-2.0",
+  "keywords": ["cannbot", "npu", "model-inference"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CANNBot 模型迁移",
+    "shortDescription": "NPU 模型迁移与推理优化工作流",
+    "longDescription": "完成模型向昇腾 NPU 的迁移、精度对齐、性能分析以及多阶段推理优化。",
+    "developerName": "CANNBot",
+    "category": "Productivity",
+    "capabilities": ["Skills", "Agents"],
+    "defaultPrompt": ["使用 model-infer-optimize 迁移并优化当前模型的 NPU 推理。"]
+  }
+}

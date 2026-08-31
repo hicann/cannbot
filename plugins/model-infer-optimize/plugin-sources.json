@@ -1,0 +1,19 @@
+{
+  "skillsRepository": "vendor/cannbot-skills",
+  "skills": [
+    "model/model-infer-migrator",
+    "model/model-infer-parallel-analysis",
+    "model/model-infer-parallel-impl",
+    "model/model-infer-kvcache",
+    "model/model-infer-fusion",
+    "model/model-infer-quantization",
+    "model/model-infer-graph-mode",
+    "model/model-infer-precision-debug",
+    "model/model-infer-runtime-debug",
+    "model/model-infer-multi-stream",
+    "model/model-infer-prefetch",
+    "model/model-infer-superkernel",
+    "model/model-infer-profiling",
+    "model/model-infer-perf-breakdown"
+  ]
+}

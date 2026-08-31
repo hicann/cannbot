@@ -1,0 +1,46 @@
+{
+  "name": "@cannbot-plugin/cannbot",
+  "version": "1.3.2",
+  "description": "CANNBot workflow installer for OpenCode, Codex, Claude Code, TRAE, and DSH",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitcode.com/cann/cannbot.git"
+  },
+  "homepage": "https://gitcode.com/cann/cannbot",
+  "bugs": {
+    "url": "https://gitcode.com/cann/cannbot/issues"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "bin": {
+    "cannbot": "bin/cannbot.js"
+  },
+  "files": [
+    "bin",
+    "dist/plugins",
+    "lib",
+    "docs",
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:plugins": "node scripts/assemble-plugins.js dist",
+    "prepack": "npm run build:plugins",
+    "prepublishOnly": "npm test && npm run pack:smoke",
+    "pretest": "npm run build:plugins",
+    "test": "node --test test/*.test.js",
+    "pack:check": "npm pack --dry-run",
+    "pack:smoke": "node scripts/smoke-package.js",
+    "skills:update": "git -C .. submodule update --remote --init --recursive --depth 1 vendor/cannbot-skills"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "license": "SEE LICENSE IN LICENSE"
+}

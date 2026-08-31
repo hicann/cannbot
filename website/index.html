@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="CANNBot 插件门户，为算子与模型开发提供可组合的 Agent 工作流。" />
+    <title>CANNBot · AI 驱动 CANN 生态创新</title>
+    <link rel="icon" type="image/svg+xml" href="./assets/brand/cannbot-favicon.svg?v=4" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="landing-page">
+    <header class="landing-nav">
+      <a class="brand brand-light" href="./" aria-label="CANNBot 首页">
+        <img class="brand-image brand-image-dark" src="./assets/brand/cannbot-wordmark-dark.png" alt="CANNBot" />
+      </a>
+      <div class="language-switcher" role="group" aria-label="语言切换">
+        <button class="active" type="button" data-lang-switch="zh">中文</button>
+        <button type="button" data-lang-switch="en">EN</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-motion" aria-hidden="true">
+          <canvas id="hero-canvas"></canvas>
+          <div class="hero-orbit">
+            <span class="orbit-ring orbit-ring-one"></span>
+            <span class="orbit-ring orbit-ring-two"></span>
+            <span class="orbit-ring orbit-ring-three"></span>
+            <span class="orbit-core"></span>
+            <i class="orbit-node node-one"></i>
+            <i class="orbit-node node-two"></i>
+            <i class="orbit-node node-three"></i>
+          </div>
+        </div>
+        <div class="hero-inner">
+          <div class="hero-copy reveal">
+            <h1 data-i18n="hero-title">AI 驱动 CANN 生态创新</h1>
+            <div class="hero-lede">
+              <p data-i18n="hero-lede-one">CANNBot 为算子与模型开发提供可组合的 Agent 工作流。</p>
+              <p data-i18n="hero-lede-two">让算子生成、算子测试与模型迁移成为 Agent 可以直接调用的能力，自由安装，灵活组合。</p>
+            </div>
+            <div class="hero-actions">
+              <a class="button button-primary" href="https://gitcode.com/cann/cannbot" target="_blank" rel="noreferrer">
+                <img class="button-icon button-icon-gitcode" src="./assets/icons/gitcode.svg" alt="" />
+                <span data-i18n="view-gitcode">查看 GitCode</span> <span>↗</span>
+              </a>
+              <a class="button button-ghost" href="./plugin.html?id=ops-direct-invoke" target="_blank" rel="noreferrer">
+                <svg class="button-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.2h7.2L13 5v8.8H3V2.2Z"/><path d="M10 2.5V5h2.6M5.2 8h5.6M5.2 10.5h4.2"/></svg>
+                <span data-i18n="plugin-docs">插件文档</span> <span>↗</span>
+              </a>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <section class="plugin-section" id="plugins">
+        <div class="section-heading reveal">
+          <p class="eyebrow dark">PLUGIN ECOSYSTEM</p>
+          <h2 data-i18n="plugin-title">让 Agent 成为 CANN 开发的新生产力</h2>
+          <p data-i18n="plugin-lede">从算子开发、测试到模型迁移，用自然语言驱动专业工作流，让复杂的 CANN 工程任务更简单。</p>
+        </div>
+        <div class="plugin-grid">
+          <a class="plugin-card plugin-card-featured reveal" href="./plugin.html?id=ops-direct-invoke">
+            <span class="card-index">01</span>
+            <div class="card-icon icon-generate">⌁</div>
+            <p class="card-domain" data-i18n="ops-domain">算子领域</p>
+            <h3 data-i18n="card-one-title">算子生成</h3>
+            <p data-i18n="card-one-lede">将 CUDA 算子迁移为 Ascend C，从分析、设计、开发到测试验证完整推进。</p>
+            <div class="card-meta"><span data-i18n="card-one-meta">完整工作流</span><span>5 Clients</span></div>
+            <span class="card-arrow">↗</span>
+          </a>
+          <a class="plugin-card reveal" href="./plugin.html?id=ascendc-st-design">
+            <span class="card-index">02</span>
+            <div class="card-icon icon-test">◇</div>
+            <p class="card-domain" data-i18n="ops-domain">算子领域</p>
+            <h3 data-i18n="card-two-title">算子测试</h3>
+            <p data-i18n="card-two-lede">基于 aclnn 接口文档完成参数定义、测试因子、约束分析及 L0/L1/L2 系统测试用例设计。</p>
+            <div class="card-meta"><span data-i18n="card-two-meta-one">独立 Skill</span><span data-i18n="card-two-meta-two">系统测试</span></div>
+            <span class="card-arrow">↗</span>
+          </a>
+          <a class="plugin-card reveal" href="./plugin.html?id=model-infer-optimize">
+            <span class="card-index">03</span>
+            <div class="card-icon icon-model">◈</div>
+            <p class="card-domain" data-i18n="model-domain">模型领域</p>
+            <h3 data-i18n="card-three-title">模型迁移与推理优化</h3>
+            <p data-i18n="card-three-lede">建立基线、处理设备适配，完成精度对齐、性能分析与推理优化。</p>
+            <div class="card-meta"><span data-i18n="card-three-meta-one">模型迁移</span><span data-i18n="card-three-meta-two">性能优化</span></div>
+            <span class="card-arrow">↗</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="demo-section">
+        <div class="demo-heading reveal">
+          <p class="eyebrow dark">OPERATOR GENERATION DEMO</p>
+          <h2 data-i18n="demo-title">体验完整的算子生成工作流</h2>
+          <p data-i18n="demo-lede">从安装插件到调用 Agent，直观看 CANNBot 如何推进算子生成任务。</p>
+        </div>
+        <div class="demo-video-frame reveal">
+          <video controls playsinline preload="metadata" poster="./assets/videos/operator-generation-poster.jpg" aria-label="CANNBot 算子生成工作流演示">
+            <source src="./assets/videos/operator-generation-demo.mp4" type="video/mp4" />
+            当前浏览器不支持视频播放。
+          </video>
+        </div>
+      </section>
+
+      <section class="workflow-band">
+        <div class="workflow-copy reveal">
+          <p class="eyebrow">MINIMAL SETUP. READY TO BUILD.</p>
+          <h2 data-i18n-html="workflow-title">极简安装，<br />即刻开始 CANN 开发。</h2>
+          <p data-i18n="workflow-lede">用一行命令接入 CANNBot，让 Agent 获得可直接调用的专业工作流。访问插件文档，查看完整安装与使用方式。</p>
+          <a class="button button-ghost workflow-doc-link" href="./plugin.html?id=ops-direct-invoke" target="_blank" rel="noreferrer">
+            <span data-i18n="workflow-docs">查看插件文档</span><span>↗</span>
+          </a>
+        </div>
+        <ol class="workflow-steps reveal">
+          <li><span>1</span><div><strong data-i18n="step-one-title">一键安装</strong><p data-i18n="step-one-lede">自动连接 Skills、Agents 与客户端配置。</p></div></li>
+          <li><span>2</span><div><strong data-i18n="step-two-title">启动客户端</strong><p data-i18n="step-two-lede">在当前项目中打开你熟悉的 Agent。</p></div></li>
+          <li><span>3</span><div><strong data-i18n="step-three-title">描述目标</strong><p data-i18n="step-three-lede">用自然语言启动完整工程工作流。</p></div></li>
+        </ol>
+      </section>
+
+    </main>
+
+    <footer class="landing-footer">
+      <a class="brand brand-light" href="./"><img class="brand-image brand-image-dark" src="./assets/brand/cannbot-wordmark-dark.png" alt="CANNBot" /></a>
+      <p>Composable workflows for Ascend developers.</p>
+      <p>© 2026 CANNBot</p>
+    </footer>
+    <div class="toast" id="toast" role="status" aria-live="polite" data-i18n="copied">命令已复制</div>
+    <script src="./app.js"></script>
+  </body>
+</html>

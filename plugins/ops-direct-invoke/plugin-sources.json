@@ -1,0 +1,26 @@
+{
+  "skillsRepository": "vendor/cannbot-skills",
+  "skills": [
+    "ops/ascendc-api-best-practices",
+    "ops/ascendc-regbase-best-practice",
+    "ops/ascendc-blaze-best-practice",
+    "ops/ascendc-blaze-migration",
+    "ops/ascendc-code-review",
+    "ops/ascendc-direct-invoke-template",
+    "ops/ascendc-docs-search",
+    "ops/ascendc-env-check",
+    "ops/npu-arch",
+    "ops/ascendc-precision-debug",
+    "ops/ascendc-runtime-debug",
+    "ops/ascendc-crash-debug",
+    "ops/ascendc-tiling-design",
+    "ops/ops-precision-standard",
+    "ops/ops-profiling",
+    "ops/torch-ascendc-op-extension",
+    "ops/ascendc-mc2-best-practice",
+    "infra/gitcode-toolkit",
+    "infra/gitcode-pr-handler",
+    "infra/gitcode-issue-gen",
+    "infra/gitcode-issue-handler"
+  ]
+}
