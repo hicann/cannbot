@@ -20,17 +20,14 @@ CANNBot 算子直调开发模式适用于**快速验证自定义算子**场景�
 
 - 已安装 CANN Toolkit（建议 ≥ 9.0.0），具体版本配套关系请查阅 [CANN Release Notes](https://www.hiascend.com/cann/document)
 - 已配置 NPU 设备（支持 Ascend 910/950 PR 等芯片）
-- 已安装 OpenCode、Codex、Claude Code、TRAE 或 DSH
 
 ### OpenCode（推荐）
 
 ```bash
-git clone https://gitcode.com/cann/cannbot.git
+git clone --recurse-submodules --shallow-submodules https://gitcode.com/cann/cannbot.git
 cd cannbot/plugins/ops-direct-invoke
 bash init.sh
 ```
-
-该命令默认安装到当前目录并使用 OpenCode，缺失的 Skill submodule 会自动初始化。安装到其他项目时可执行 `bash init.sh project opencode /path/to/target-project`。
 
 ### 其他工具
 
@@ -69,18 +66,6 @@ bash init.sh project trae /path/to/target-project
 安装后自动检测 TRAE 环境，生成 `.trae/`（TRAE IDE）、`.marscode/`（TRAE Plugin）或 `.traecli/`（TRAE CLI）目录，结构与 Claude/OpenCode 基本一致。
 
 </details>
-
-### 在其他目录执行
-
-`init.sh` 支持通过完整路径调用，无需先 `cd` 到插件目录。第三个参数指定目标项目路径，省略则安装到当前目录：
-
-```bash
-# 安装到当前目录
-bash /path/to/cannbot/plugins/ops-direct-invoke/init.sh project opencode
-
-# 安装到指定项目
-bash /path/to/cannbot/plugins/ops-direct-invoke/init.sh project opencode /path/to/your_project_path
-```
 
 ### 验证安装
 

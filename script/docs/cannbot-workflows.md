@@ -2,14 +2,14 @@
 
 ## 安装方式
 
-普通用户在目标项目中执行各插件下方的 `npx` 命令。源码开发者进入对应插件目录执行一个脚本即可，缺失的 Skill submodule 会自动初始化：
+普通用户在目标项目中执行各插件下方的 `npx` 命令。源码安装进入对应插件目录执行：
 
 ```bash
-cd plugins/<plugin-id>
+cd plugins/<plugin>
 bash init.sh
 ```
 
-默认目标是当前目录、工具是 OpenCode。其他情况可执行 `bash init.sh project <opencode|codex|claude|trae|dsh> /path/to/target-project`。开发者不需要手动执行 Node 命令；两种方式只在插件 bundle 的来源上不同，后续共用同一套 Node 安装流程。
+安装器按需初始化 Skill submodule，并将 Skill 链接到 cannbot 仓库根目录的客户端配置中。
 
 ## 算子领域
 

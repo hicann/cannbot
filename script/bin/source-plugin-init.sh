@@ -11,7 +11,7 @@ usage() {
 Usage: bash init.sh [project] [opencode|codex|claude|trae|dsh] [install_path]
 
 Installs ${PLUGIN_ID} from this source checkout. The default tool is opencode
-and the default install path is the current working directory.
+and the default install path is the source repository root.
 EOF
 }
 
@@ -40,7 +40,6 @@ if [[ "${LEVEL}" != "project" ]]; then
   exit 1
 fi
 
-INSTALL_PATH="${INSTALL_PATH:-${PWD}}"
 if [[ -f "${PLUGIN_DIR}/../../script/bin/cannbot.js" ]]; then
   REPOSITORY_ROOT="$(cd "${PLUGIN_DIR}/../.." && pwd)"
   CLI="${REPOSITORY_ROOT}/script/bin/cannbot.js"
@@ -51,6 +50,7 @@ else
   echo "cannbot: cannot locate the unified installer from ${PLUGIN_DIR}" >&2
   exit 1
 fi
+INSTALL_PATH="${INSTALL_PATH:-${REPOSITORY_ROOT}}"
 
 exec node "${CLI}" install "${PLUGIN_ID}" \
   --tool "${TOOL}" --target "${INSTALL_PATH}" --source "${REPOSITORY_ROOT}"

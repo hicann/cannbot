@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
@@ -33,7 +33,26 @@ function configRoot(target, tool) {
 }
 
 function skillRoot(target, tool) {
-  return tool === "codex" ? join(target, ".agents", "skills") : join(configRoot(target, tool), "skills");
+  return tool === "codex" || tool === "opencode"
+    ? join(target, ".agents", "skills")
+    : join(configRoot(target, tool), "skills");
+}
+
+function assertSkillInstallation(installedSkill, source, plugin, skill) {
+  const shouldLink = source === "repository";
+  assert.equal(lstatSync(installedSkill).isSymbolicLink(), shouldLink);
+  if (!shouldLink) return;
+  assert.equal(isAbsolute(readlinkSync(installedSkill)), false);
+  const definition = JSON.parse(readFileSync(
+    join(repositoryRoot, "plugins", plugin, "plugin-sources.json"),
+    "utf8",
+  ));
+  const relativeSkill = definition.skills.find((candidate) => candidate.split("/").at(-1) === skill);
+  assert.ok(relativeSkill, `missing source mapping for ${plugin}/${skill}`);
+  assert.equal(
+    realpathSync(installedSkill),
+    realpathSync(join(repositoryRoot, definition.skillsRepository, relativeSkill)),
+  );
 }
 
 function installPlugin(plugin, tool, source = "repository") {
@@ -112,6 +131,24 @@ test("repository maps every official plugin to the Skill submodule", () => {
     assert.equal(existsSync(join(root, ".codex-plugin", "plugin.json")), true);
     assert.equal(existsSync(join(root, "plugin-sources.json")), true);
     assert.equal(existsSync(join(root, "skills")), false);
+    const sourceDefinition = JSON.parse(readFileSync(join(root, "plugin-sources.json"), "utf8"));
+    assert.equal(sourceDefinition.skillInstallMode, "symlink");
+    const quickstartPath = join(root, "quickstart.md");
+    if (existsSync(quickstartPath)) {
+      const quickstart = readFileSync(quickstartPath, "utf8");
+      assert.doesNotMatch(quickstart, /cann\.cannbot\.cn/);
+      assert.doesNotMatch(quickstart, /默认安装到当前目录并使用 OpenCode/);
+      assert.match(quickstart, /git clone --recurse-submodules/);
+    }
+    const codexManifest = JSON.parse(readFileSync(join(root, ".codex-plugin", "plugin.json"), "utf8"));
+    assert.equal(codexManifest.homepage, "https://gitcode.com/cann/cannbot");
+    assert.equal(codexManifest.repository, "https://gitcode.com/cann/cannbot");
+    const trackedFiles = spawnSync("git", ["ls-files", "-s", `plugins/${plugin}`], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    assert.equal(trackedFiles.status, 0, trackedFiles.stderr);
+    assert.equal(trackedFiles.stdout.split("\n").some((line) => line.startsWith("120000 ")), false);
   }
   assert.equal(existsSync(join(repositoryRoot, "vendor", "cannbot-skills", ".git")), true);
   for (const removed of ["catalog", "plugins-official", "ops", "infra", "model"]) {
@@ -141,6 +178,8 @@ test("Claude marketplace matches the official plugin manifests", () => {
     assert.equal(plugin.version, manifest.version);
     assert.equal(plugin.description, manifest.description);
     assert.deepEqual(plugin.dependencies, manifest.dependencies);
+    assert.equal(manifest.homepage, "https://gitcode.com/cann/cannbot");
+    assert.equal(manifest.repository, "https://gitcode.com/cann/cannbot");
     assert.equal(manifest.skills, undefined);
 
     const sourceDefinition = JSON.parse(readFileSync(
@@ -189,14 +228,15 @@ test("package bundle includes the official plugin license", () => {
 
 for (const source of sources) {
   for (const tool of tools) {
-    test(`${source} installs self-contained ascendc-st-design for ${tool}`, () => {
+    test(`${source} installs ascendc-st-design for ${tool}`, () => {
       const { target } = installPlugin("ascendc-st-design", tool, source);
       const installedSkill = join(skillRoot(target, tool), "ascendc-st-design");
       assert.equal(existsSync(join(installedSkill, "SKILL.md")), true);
-      assert.equal(lstatSync(installedSkill).isSymbolicLink(), false);
+      assertSkillInstallation(installedSkill, source, "ascendc-st-design", "ascendc-st-design");
       const record = readPluginRecord(target, tool, "ascendc-st-design");
       assert.equal(record.sourcePackage, sourcePackage);
       assert.equal(record.source.kind, source);
+      assert.equal(record.skillInstallMode, source === "repository" ? "symlink" : "copy");
       assert.equal(existsSync(join(target, ".cannbot", "plugins", "ascendc-st-design", "LICENSE")), true);
       assert.equal(existsSync(join(target, ".cannbot", "plugins", "ascendc-st-design", "SKILLS_LICENSE")), true);
     });
@@ -205,14 +245,14 @@ for (const source of sources) {
 
 for (const source of sources) {
   for (const tool of tools) {
-    test(`${source} installs self-contained ops-direct-invoke for ${tool}`, () => {
+    test(`${source} installs ops-direct-invoke for ${tool}`, () => {
       const { sandbox, target } = installPlugin("ops-direct-invoke", tool, source);
       const root = configRoot(target, tool);
       const agent = tool === "codex" ? "ascendc-kernel-architect.toml" : "ascendc-kernel-architect.md";
       const workflow = join(target, ".cannbot", "plugins", "ops-direct-invoke", "workflows");
       const installedSkill = join(skillRoot(target, tool), "ascendc-env-check");
       assert.equal(existsSync(join(installedSkill, "SKILL.md")), true);
-      assert.equal(lstatSync(installedSkill).isSymbolicLink(), false);
+      assertSkillInstallation(installedSkill, source, "ops-direct-invoke", "ascendc-env-check");
       assert.equal(existsSync(join(skillRoot(target, tool), "gitcode-toolkit", "SKILL.md")), true);
       assert.equal(existsSync(join(root, "agents", agent)), true);
       assert.equal(existsSync(join(workflow, "scripts", "validate_state.py")), true);
@@ -221,6 +261,7 @@ for (const source of sources) {
       assert.equal(record.agents.length, 4);
       assert.equal(record.sourcePackage, sourcePackage);
       assert.equal(record.source.kind, source);
+      assert.equal(record.skillInstallMode, source === "repository" ? "symlink" : "copy");
       assertUnifiedInstall(target, tool, "ops-direct-invoke");
       if (tool === "codex") {
         assert.equal(existsSync(join(sandbox, "home", "plugins", "ops-direct-invoke", ".codex-plugin", "plugin.json")), true);
@@ -231,7 +272,7 @@ for (const source of sources) {
 
 for (const source of sources) {
   for (const tool of tools) {
-    test(`${source} installs self-contained model-infer-optimize for ${tool}`, () => {
+    test(`${source} installs model-infer-optimize for ${tool}`, () => {
       const { target } = installPlugin("model-infer-optimize", tool, source);
       const root = configRoot(target, tool);
       const agent = tool === "codex" ? "model-infer-analyzer.toml" : "model-infer-analyzer.md";
@@ -244,6 +285,13 @@ for (const source of sources) {
       assert.equal(record.agents.length, 9);
       assert.equal(record.sourcePackage, sourcePackage);
       assert.equal(record.source.kind, source);
+      assert.equal(record.skillInstallMode, source === "repository" ? "symlink" : "copy");
+      assertSkillInstallation(
+        join(skillRoot(target, tool), "model-infer-migrator"),
+        source,
+        "model-infer-optimize",
+        "model-infer-migrator",
+      );
       assertUnifiedInstall(target, tool, "model-infer-optimize");
       if (tool === "claude") {
         assert.equal(existsSync(join(root, "settings.json")), true);
@@ -256,10 +304,80 @@ for (const source of sources) {
 for (const plugin of ["ops-direct-invoke", "ascendc-st-design", "model-infer-optimize"]) {
   test(`${plugin} source init delegates to the unified installer`, () => {
     const { target } = installWithSourceInit(plugin, "opencode");
+    const record = readPluginRecord(target, "opencode", plugin);
+    assert.equal(record.skillInstallMode, "symlink");
+    assert.equal(lstatSync(join(target, record.skills[0])).isSymbolicLink(), true);
     assert.equal(existsSync(join(configRoot(target, "opencode"), "cannbot-plugin.json")), true);
     assertUnifiedInstall(target, "opencode", plugin);
   });
 }
+
+test("source init defaults to the source repository root", () => {
+  const sandbox = createSandbox("cannbot-init-default-");
+  const fixtureRepository = join(sandbox, "repository");
+  const pluginDir = join(fixtureRepository, "plugins", "fixture-plugin");
+  const fixtureCli = join(fixtureRepository, "script", "bin", "cannbot.js");
+  const capture = join(sandbox, "args.json");
+  mkdirSync(pluginDir, { recursive: true });
+  mkdirSync(join(fixtureRepository, "script", "bin"), { recursive: true });
+  writeFileSync(fixtureCli, [
+    "const fs = require('node:fs');",
+    "fs.writeFileSync(process.env.CANNBOT_CAPTURE, JSON.stringify(process.argv.slice(2)));",
+    "",
+  ].join("\n"));
+
+  const result = spawnSync("bash", [join(packageRoot, "bin", "source-plugin-init.sh"), pluginDir], {
+    cwd: pluginDir,
+    encoding: "utf8",
+    env: { ...process.env, CANNBOT_CAPTURE: capture },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const args = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(args, [
+    "install",
+    "fixture-plugin",
+    "--tool",
+    "opencode",
+    "--target",
+    fixtureRepository,
+    "--source",
+    fixtureRepository,
+  ]);
+});
+
+test("source install preserves an existing real Skill directory", () => {
+  const sandbox = createSandbox("cannbot-skill-collision-");
+  const target = join(sandbox, "project");
+  const destination = join(target, ".agents", "skills", "ascendc-st-design");
+  const sentinel = join(destination, "user-content.txt");
+  mkdirSync(destination, { recursive: true });
+  writeFileSync(sentinel, "keep\n");
+
+  const result = spawnSync(process.execPath, [
+    cli,
+    "install",
+    "ascendc-st-design",
+    "--tool",
+    "opencode",
+    "--target",
+    target,
+    "--source",
+    repositoryRoot,
+  ], {
+    cwd: target,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: join(sandbox, "home"),
+      CANNBOT_SKIP_OPENCODE_PLUGIN_ADD: "1",
+      CANNBOT_SKIP_DEPENDENCY_REPOS: "1",
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Skill destination already exists and is not a symlink/);
+  assert.equal(readFileSync(sentinel, "utf8"), "keep\n");
+  assert.equal(lstatSync(destination).isDirectory(), true);
+});
 
 test("reinstall preserves user instructions and keeps one managed block", () => {
   const { sandbox, target } = installPlugin("ops-direct-invoke", "dsh", "package");
@@ -358,20 +476,39 @@ test("declarative dependencies use the same project-level install flow", () => {
   assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
 
   const plugin = "dependency-fixture";
-  const pluginRoot = join(sandbox, "bundle", "plugins", plugin);
+  const bundleRoot = join(sandbox, "bundle");
+  const pluginRoot = join(bundleRoot, "plugins", plugin);
+  const skillsRepository = join(bundleRoot, "skills-repository");
+  const fixtureSkill = join(skillsRepository, "fixture-skill");
   mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
-  mkdirSync(join(pluginRoot, "skills", "fixture-skill"), { recursive: true });
+  mkdirSync(join(fixtureSkill, "scripts"), { recursive: true });
+  mkdirSync(join(skillsRepository, ".git"));
   writeFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
     name: plugin,
     version: "1.0.0",
     description: "Dependency fixture",
-    skills: ["./skills/fixture-skill"],
   }));
-  writeFileSync(join(pluginRoot, "skills", "fixture-skill", "SKILL.md"), [
+  writeFileSync(join(pluginRoot, "plugin-sources.json"), JSON.stringify({
+    skillsRepository: "skills-repository",
+    skillInstallMode: "symlink",
+    skills: ["fixture-skill"],
+  }));
+  writeFileSync(join(fixtureSkill, "SKILL.md"), [
     "---",
     "name: fixture-skill",
     "description: Test fixture",
     "---",
+    "",
+  ].join("\n"));
+  writeFileSync(join(fixtureSkill, "scripts", "clean_markdown.py"), [
+    "import argparse",
+    "from pathlib import Path",
+    "parser = argparse.ArgumentParser()",
+    "parser.add_argument('--dir', required=True)",
+    "parser.add_argument('--no-backup', action='store_true')",
+    "parser.add_argument('--quiet', action='store_true')",
+    "args = parser.parse_args()",
+    "Path(args.dir, '.cleaned-by-skill').write_text('cleaned\\n')",
     "",
   ].join("\n"));
   writeFileSync(join(pluginRoot, "plugin-install.json"), JSON.stringify({
@@ -379,6 +516,7 @@ test("declarative dependencies use the same project-level install flow", () => {
       name: "fixture-dependency",
       repository: dependencyRepository,
       expose: "fixture-dependency",
+      cleanMarkdownWithSkill: "fixture-skill",
     }],
   }));
 
@@ -393,7 +531,7 @@ test("declarative dependencies use the same project-level install flow", () => {
     "--target",
     target,
     "--source",
-    join(sandbox, "bundle"),
+    bundleRoot,
   ], {
     cwd: target,
     encoding: "utf8",
@@ -407,7 +545,9 @@ test("declarative dependencies use the same project-level install flow", () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const checkout = join(target, ".cannbot", "dependencies", plugin, "fixture-dependency");
   assert.equal(existsSync(join(checkout, ".git")), true);
+  assert.equal(readFileSync(join(checkout, ".cleaned-by-skill"), "utf8"), "cleaned\n");
   assert.equal(lstatSync(join(target, "fixture-dependency")).isSymbolicLink(), true);
+  assert.equal(isAbsolute(readlinkSync(join(target, "fixture-dependency"))), false);
   const record = readPluginRecord(target, "dsh", plugin);
   assert.deepEqual(record.dependencies, [join(".cannbot", "dependencies", plugin, "fixture-dependency")]);
 });

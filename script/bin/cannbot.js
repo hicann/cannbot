@@ -5,7 +5,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -14,15 +13,23 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { assemblePlugins, pluginSourceDefinition } from "../lib/plugin-bundle.js";
+import { pluginSourceDefinition } from "../lib/plugin-bundle.js";
 
 const installerPackage = readJson(new URL("../package.json", import.meta.url));
 const OPENCODE_PLUGIN_SPEC = `${installerPackage.name}@${installerPackage.version}`;
 const BUNDLED_REPOSITORY = fileURLToPath(new URL("../", import.meta.url));
 const PACKAGE_CACHEBUSTER = `cannbot-${installerPackage.version.replaceAll(".", "-")}`;
+const TOOL_DIRECTORIES = Object.freeze({
+  opencode: { configDirs: [".opencode"], defaultConfigDir: ".opencode", skillsDir: [".agents", "skills"] },
+  codex: { configDirs: [".codex"], defaultConfigDir: ".codex", skillsDir: [".agents", "skills"] },
+  claude: { configDirs: [".claude"], defaultConfigDir: ".claude" },
+  trae: { configDirs: [".traecli", ".marscode", ".trae", ".trae-cn"], defaultConfigDir: ".trae" },
+  dsh: { configDirs: [".dsh"], defaultConfigDir: ".dsh" },
+});
+const TOOL_NAMES = Object.keys(TOOL_DIRECTORIES);
 
 function fail(message) {
   console.error(`cannbot: ${message}`);
@@ -43,7 +50,7 @@ function tryRun(command, args, cwd) {
 function parseArgs(argv) {
   const [command, pluginId, ...rest] = argv;
   if (command !== "install" || !pluginId) {
-    fail("usage: cannbot install <plugin-id> --tool <opencode|codex|claude|trae|dsh> [--target <dir>] [--source <repository>]");
+    fail(`usage: cannbot install <plugin> --tool <${TOOL_NAMES.join("|")}> [--target <dir>] [--source <repository>]`);
   }
   const options = { command, pluginId, target: process.cwd() };
   for (let index = 0; index < rest.length; index += 1) {
@@ -56,8 +63,8 @@ function parseArgs(argv) {
     else fail(`unknown option: ${key}`);
     index += 1;
   }
-  if (!new Set(["opencode", "codex", "claude", "trae", "dsh"]).has(options.tool)) {
-    fail("--tool must be opencode, codex, claude, trae, or dsh");
+  if (!TOOL_DIRECTORIES[options.tool]) {
+    fail(`--tool must be one of: ${TOOL_NAMES.join(", ")}`);
   }
   return options;
 }
@@ -76,10 +83,6 @@ function containsPlugin(repoPath, pluginId) {
 }
 
 function resolveBundle(override, pluginId) {
-  const cacheBase = process.env.XDG_CACHE_HOME
-    ? resolve(process.env.XDG_CACHE_HOME)
-    : join(homedir(), ".cache");
-
   if (override) {
     const source = pluginSourceDefinition(override, pluginId);
     if (source) {
@@ -88,19 +91,7 @@ function resolveBundle(override, pluginId) {
         console.log(`Initializing ${source.skillsRepository} submodule...`);
         run("git", ["submodule", "update", "--init", "--recursive", "--depth", "1", source.skillsRepository], override);
       }
-      const bundlePath = join(cacheBase, "cannbot", "source", installerPackage.version, pluginId);
-      const bundleParent = dirname(bundlePath);
-      mkdirSync(bundleParent, { recursive: true });
-      const staging = mkdtempSync(join(bundleParent, `.staging-${pluginId}-`));
-      try {
-        assemblePlugins(override, staging, [pluginId]);
-      } catch (error) {
-        rmSync(staging, { recursive: true, force: true });
-        fail(error.message);
-      }
-      rmSync(bundlePath, { recursive: true, force: true });
-      renameSync(staging, bundlePath);
-      return resolvePluginDir(bundlePath, pluginId);
+      return source.pluginRoot;
     }
     if (containsPlugin(override, pluginId)) return resolvePluginDir(override, pluginId);
     fail(`invalid CANNBot repository: ${override}`);
@@ -129,12 +120,23 @@ function instructionMarkers(pluginName) {
   };
 }
 
-function copySkill(source, destination) {
+function installSkill(source, destination, mode) {
+  if (mode === "symlink") {
+    if (pathExists(destination)) {
+      if (!lstatSync(destination).isSymbolicLink()) {
+        fail(`Skill destination already exists and is not a symlink: ${destination}`);
+      }
+      rmSync(destination, { force: true });
+    }
+    const linkTarget = relative(dirname(destination), source) || ".";
+    symlinkSync(linkTarget, destination, "dir");
+    return;
+  }
   rmSync(destination, { recursive: true, force: true });
   cpSync(source, destination, { recursive: true, dereference: true });
 }
 
-function installPluginAssets(pluginDir, plugin, target) {
+function installPluginAssets(pluginDir, plugin, target, sourceDefinition) {
   const relativeRoot = `.cannbot/plugins/${plugin.name}`;
   const destinationRoot = join(target, relativeRoot);
   rmSync(destinationRoot, { recursive: true, force: true });
@@ -142,7 +144,12 @@ function installPluginAssets(pluginDir, plugin, target) {
   const assets = { destinationRoot, relativeRoot };
   let installed = false;
   for (const name of ["workflows", "hooks", "LICENSE", "SKILLS_LICENSE"]) {
-    const source = join(pluginDir, name);
+    let source = join(pluginDir, name);
+    if (!existsSync(source) && sourceDefinition && name === "LICENSE") {
+      source = join(dirname(pluginDir), "LICENSE");
+    } else if (!existsSync(source) && sourceDefinition && name === "SKILLS_LICENSE") {
+      source = join(resolve(pluginDir, "..", "..", sourceDefinition.skillsRepository), "LICENSE");
+    }
     if (!existsSync(source)) continue;
     cpSync(source, join(destinationRoot, name), { recursive: true, dereference: true });
     installed = true;
@@ -176,16 +183,15 @@ function rewriteTreeReferences(root, assets) {
 }
 
 function toolConfigDir(target, tool) {
-  if (tool === "trae") {
-    return [".traecli", ".marscode", ".trae", ".trae-cn"]
-      .map((name) => join(target, name))
-      .find((path) => existsSync(path)) ?? join(target, ".trae");
-  }
-  return join(target, tool === "opencode" ? ".opencode" : `.${tool}`);
+  const layout = TOOL_DIRECTORIES[tool];
+  return layout.configDirs
+    .map((name) => join(target, name))
+    .find((path) => existsSync(path)) ?? join(target, layout.defaultConfigDir);
 }
 
 function toolSkillsDir(target, tool) {
-  if (tool === "codex") return join(target, ".agents", "skills");
+  const skillsDir = TOOL_DIRECTORIES[tool].skillsDir;
+  if (skillsDir) return join(target, ...skillsDir);
   return join(toolConfigDir(target, tool), "skills");
 }
 
@@ -220,6 +226,28 @@ function resolveSkills(plugin, pluginDir) {
     if (entry.isDirectory() && existsSync(join(source, "SKILL.md"))) addSkill(source);
   }
 
+  return [...skills.entries()].map(([name, source]) => ({ name, source }));
+}
+
+function resolveSourceSkills(repositoryRoot, sourceDefinition) {
+  const skillsRepository = resolve(repositoryRoot, sourceDefinition.skillsRepository);
+  const skills = new Map();
+  for (const relativeSkill of sourceDefinition.skills) {
+    if (typeof relativeSkill !== "string" || !relativeSkill) {
+      fail(`invalid Skill path in ${sourceDefinition.definitionPath}`);
+    }
+    const source = resolve(skillsRepository, relativeSkill);
+    const pathFromRoot = relative(skillsRepository, source);
+    if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
+      fail(`Skill path escapes its repository root: ${relativeSkill}`);
+    }
+    const skillPath = join(source, "SKILL.md");
+    if (!existsSync(skillPath)) fail(`skill is missing SKILL.md: ${source}`);
+    const name = readFileSync(skillPath, "utf8").match(/^name:\s*([^\r\n]+)$/m)?.[1]?.trim();
+    if (!name) fail(`skill is missing a frontmatter name: ${skillPath}`);
+    if (skills.has(name)) fail(`duplicate Skill name in source definition: ${name}`);
+    skills.set(name, source);
+  }
   return [...skills.entries()].map(([name, source]) => ({ name, source }));
 }
 
@@ -345,11 +373,11 @@ function exposeDependency(source, destination) {
       return false;
     }
   }
-  symlinkSync(source, destination, "dir");
+  symlinkSync(relative(dirname(destination), source) || ".", destination, "dir");
   return true;
 }
 
-function provisionDependencies(pluginDir, plugin, target) {
+function provisionDependencies(pluginDir, plugin, target, skills) {
   const definitionPath = join(pluginDir, "plugin-install.json");
   if (!existsSync(definitionPath)) return [];
   const definition = readJson(definitionPath);
@@ -393,10 +421,15 @@ function provisionDependencies(pluginDir, plugin, target) {
       if (!updated) console.warn(`cannbot: ${dependency.name} submodule update was incomplete`);
     }
     if (dependency.cleanMarkdownWithSkill) {
-      const cleaner = join(pluginDir, "skills", dependency.cleanMarkdownWithSkill, "scripts", "clean_markdown.py");
-      if (existsSync(cleaner)) {
+      const cleanerSkill = skills.find((skill) => skill.name === dependency.cleanMarkdownWithSkill);
+      const cleaner = cleanerSkill
+        ? join(cleanerSkill.source, "scripts", "clean_markdown.py")
+        : null;
+      if (cleaner && existsSync(cleaner)) {
         const cleaned = tryRun("python3", [cleaner, "--dir", destination, "--no-backup", "--quiet"], target);
         if (!cleaned) console.warn(`cannbot: markdown cleanup failed for ${dependency.name}`);
+      } else {
+        console.warn(`cannbot: cleanup Skill is unavailable: ${dependency.cleanMarkdownWithSkill}`);
       }
     }
     if (dependency.expose) exposeDependency(destination, join(target, dependency.expose));
@@ -405,14 +438,14 @@ function provisionDependencies(pluginDir, plugin, target) {
   return installed;
 }
 
-function installCodexPlugin(plugin, skills, target) {
+function installCodexPlugin(plugin, skills, target, skillInstallMode) {
   const userHome = resolve(process.env.HOME || homedir());
   const pluginRoot = join(userHome, "plugins", plugin.name);
   const pluginSkills = join(pluginRoot, "skills");
   rmSync(pluginRoot, { recursive: true, force: true });
   mkdirSync(pluginSkills, { recursive: true });
   for (const skill of skills) {
-    copySkill(skill.source, join(pluginSkills, skill.name));
+    installSkill(skill.source, join(pluginSkills, skill.name), skillInstallMode);
   }
 
   const developerName = plugin.author?.name || "CANNBot";
@@ -482,7 +515,11 @@ function installOpenCodePlugin(target) {
 
 function install(options) {
   const sourceRoot = options.source ?? process.env.CANNBOT_SOURCE_ROOT ?? process.env.CANNBOT_SKILLS_PATH;
-  const pluginDir = resolveBundle(sourceRoot, options.pluginId);
+  const sourceRepositoryRoot = sourceRoot ? resolve(sourceRoot) : null;
+  const sourceDefinition = sourceRepositoryRoot
+    ? pluginSourceDefinition(sourceRepositoryRoot, options.pluginId)
+    : null;
+  const pluginDir = resolveBundle(sourceRepositoryRoot, options.pluginId);
   const manifestPath = join(pluginDir, ".claude-plugin", "plugin.json");
   if (!existsSync(manifestPath)) {
     fail(`plugin not found: ${options.pluginId}`);
@@ -490,23 +527,26 @@ function install(options) {
   mkdirSync(options.target, { recursive: true });
 
   const plugin = readJson(manifestPath);
-  const resolvedSkills = resolveSkills(plugin, pluginDir);
+  const skillInstallMode = sourceDefinition?.skillInstallMode ?? "copy";
+  const resolvedSkills = sourceDefinition
+    ? resolveSourceSkills(sourceRepositoryRoot, sourceDefinition)
+    : resolveSkills(plugin, pluginDir);
   const skillsDir = toolSkillsDir(options.target, options.tool);
   mkdirSync(skillsDir, { recursive: true });
   const installedSkills = [];
   for (const skill of resolvedSkills) {
     const destination = join(skillsDir, skill.name);
-    copySkill(skill.source, destination);
+    installSkill(skill.source, destination, skillInstallMode);
     installedSkills.push(destination);
   }
 
-  const assets = installPluginAssets(pluginDir, plugin, options.target);
+  const assets = installPluginAssets(pluginDir, plugin, options.target, sourceDefinition);
   const installedAgents = installAgents(pluginDir, plugin, options.tool, options.target, assets);
   const instructions = installInstructions(pluginDir, plugin, options.target, options.tool, assets);
   const hookSettings = installClaudeHooks(pluginDir, options.target, options.tool, assets);
-  const dependencies = provisionDependencies(pluginDir, plugin, options.target);
+  const dependencies = provisionDependencies(pluginDir, plugin, options.target, resolvedSkills);
   const nativePlugin = options.tool === "codex"
-    ? installCodexPlugin(plugin, resolvedSkills, options.target)
+    ? installCodexPlugin(plugin, resolvedSkills, options.target, skillInstallMode)
     : options.tool === "opencode"
       ? installOpenCodePlugin(options.target)
       : { initializer: null, discovery: `${toolConfigDir("", options.tool)}/skills` };
@@ -518,6 +558,7 @@ function install(options) {
     sourcePackage: OPENCODE_PLUGIN_SPEC,
     source: sourceRoot ? { kind: "repository" } : { kind: "package", package: OPENCODE_PLUGIN_SPEC },
     tool: options.tool,
+    skillInstallMode,
     skills: installedSkills.map((path) => path.slice(options.target.length + 1)),
     agents: installedAgents.map((path) => path.slice(options.target.length + 1)),
     instructions: instructions?.slice(options.target.length + 1) ?? null,

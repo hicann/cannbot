@@ -15,17 +15,14 @@
 
 - 已安装 CANN Toolkit（建议 ≥ 9.0.0），具体版本配套关系请查阅 [CANN Release Notes](https://www.hiascend.com/cann/document)
 - 已配置 NPU 设备（支持 Ascend 910/950 PR 等芯片）
-- 已安装 OpenCode、Codex、Claude Code、TRAE 或 DSH
 
 ### OpenCode（推荐）
 
 ```bash
-git clone https://gitcode.com/cann/cannbot.git
+git clone --recurse-submodules --shallow-submodules https://gitcode.com/cann/cannbot.git
 cd cannbot/plugins/model-infer-optimize
 bash init.sh
 ```
-
-该命令默认安装到当前目录并使用 OpenCode，缺失的 Skill submodule 会自动初始化。安装到其他项目时可执行 `bash init.sh project opencode /path/to/target-project`。
 
 验证：
 

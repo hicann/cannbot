@@ -1,5 +1,6 @@
 {
   "skillsRepository": "vendor/cannbot-skills",
+  "skillInstallMode": "symlink",
   "skills": [
     "ops/ascendc-st-design"
   ]

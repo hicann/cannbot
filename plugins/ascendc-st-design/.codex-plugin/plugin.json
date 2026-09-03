@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Ascend C 算子系统测试（ST）设计工作流。",
   "author": { "name": "CANNBot" },
-  "homepage": "https://cann.cannbot.cn/plugin.html?id=ascendc-st-design",
+  "homepage": "https://gitcode.com/cann/cannbot",
   "repository": "https://gitcode.com/cann/cannbot",
   "license": "CANN-2.0",
   "keywords": ["cannbot", "ascend-c", "operator-testing"],

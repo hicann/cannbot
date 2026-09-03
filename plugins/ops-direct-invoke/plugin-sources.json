@@ -1,5 +1,6 @@
 {
   "skillsRepository": "vendor/cannbot-skills",
+  "skillInstallMode": "symlink",
   "skills": [
     "ops/ascendc-api-best-practices",
     "ops/ascendc-regbase-best-practice",

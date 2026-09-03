@@ -3,7 +3,7 @@
   "version": "1.0.6",
   "description": "NPU 模型迁移与推理性能优化工作流。",
   "author": { "name": "CANNBot" },
-  "homepage": "https://cann.cannbot.cn/plugin.html?id=model-infer-optimize",
+  "homepage": "https://gitcode.com/cann/cannbot",
   "repository": "https://gitcode.com/cann/cannbot",
   "license": "CANN-2.0",
   "keywords": ["cannbot", "npu", "model-inference"],

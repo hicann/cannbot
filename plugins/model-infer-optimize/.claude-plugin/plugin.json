@@ -5,7 +5,7 @@
   "author": {
     "name": "CANNBot"
   },
-  "homepage": "https://cann.cannbot.cn/plugin.html?id=model-infer-optimize",
+  "homepage": "https://gitcode.com/cann/cannbot",
   "repository": "https://gitcode.com/cann/cannbot",
   "license": "CANN-2.0",
   "dependencies": ["model-infer-skills"],

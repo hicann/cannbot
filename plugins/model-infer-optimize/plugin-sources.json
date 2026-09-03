@@ -1,5 +1,6 @@
 {
   "skillsRepository": "vendor/cannbot-skills",
+  "skillInstallMode": "symlink",
   "skills": [
     "model/model-infer-migrator",
     "model/model-infer-parallel-analysis",

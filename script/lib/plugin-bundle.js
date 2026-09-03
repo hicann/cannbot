@@ -27,6 +27,9 @@ export function pluginSourceDefinition(repositoryRoot, pluginId) {
   if (!definition || typeof definition.skillsRepository !== "string" || !Array.isArray(definition.skills)) {
     throw new Error(`invalid plugin source definition: ${definitionPath}`);
   }
+  if (definition.skillInstallMode !== undefined && definition.skillInstallMode !== "symlink") {
+    throw new Error(`invalid Skill install mode in ${definitionPath}`);
+  }
   return { pluginRoot, definitionPath, ...definition };
 }
 
