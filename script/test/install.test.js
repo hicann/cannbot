@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -130,7 +130,9 @@ test("repository maps every official plugin to the Skill submodule", () => {
     assert.equal(existsSync(join(root, ".claude-plugin", "plugin.json")), true);
     assert.equal(existsSync(join(root, ".codex-plugin", "plugin.json")), true);
     assert.equal(existsSync(join(root, "plugin-sources.json")), true);
-    assert.equal(existsSync(join(root, "skills")), false);
+    if (plugin !== "ops-direct-invoke") {
+      assert.equal(existsSync(join(root, "skills")), false);
+    }
     const sourceDefinition = JSON.parse(readFileSync(join(root, "plugin-sources.json"), "utf8"));
     assert.equal(sourceDefinition.skillInstallMode, "symlink");
     const quickstartPath = join(root, "quickstart.md");
@@ -150,6 +152,11 @@ test("repository maps every official plugin to the Skill submodule", () => {
     assert.equal(trackedFiles.status, 0, trackedFiles.stderr);
     assert.equal(trackedFiles.stdout.split("\n").some((line) => line.startsWith("120000 ")), false);
   }
+  // ops-direct-invoke ships self-contained workflow skills in plugins/<id>/skills/;
+  // the other two plugins resolve all skills from the submodule only.
+  assert.equal(existsSync(join(repositoryRoot, "plugins", "ops-direct-invoke", "skills")), true);
+  assert.equal(existsSync(join(repositoryRoot, "plugins", "ascendc-st-design", "skills")), false);
+  assert.equal(existsSync(join(repositoryRoot, "plugins", "model-infer-optimize", "skills")), false);
   assert.equal(existsSync(join(repositoryRoot, "vendor", "cannbot-skills", ".git")), true);
   for (const removed of ["catalog", "plugins-official", "ops", "infra", "model"]) {
     assert.equal(existsSync(join(repositoryRoot, removed)), false, `${removed} should not exist at repository root`);
@@ -202,10 +209,18 @@ test("Claude marketplace matches the official plugin manifests", () => {
       "utf8",
     ));
     assert.equal(bundledManifest.dependencies, undefined);
-    assert.deepEqual(
-      bundledManifest.skills.map((skill) => skill.replace(/^\.\/skills\//, "")).sort(),
-      sourceDefinition.skills.map((skill) => skill.split("/").at(-1)).sort(),
-    );
+    // The bundled manifest lists the union of submodule skills (plugin-sources.json)
+    // and any self-contained skills shipped inside the plugin (plugins/<id>/skills/).
+    const bundledSkills = bundledManifest.skills.map((skill) => skill.replace(/^\.\/skills\//, "")).sort();
+    const submoduleSkills = sourceDefinition.skills.map((skill) => skill.split("/").at(-1)).sort();
+    const selfContainedSkills = [];
+    const selfContainedRoot = join(repositoryRoot, "plugins", plugin.name, "skills");
+    if (existsSync(selfContainedRoot)) {
+      for (const entry of readdirSync(selfContainedRoot)) {
+        if (existsSync(join(selfContainedRoot, entry, "SKILL.md"))) selfContainedSkills.push(entry);
+      }
+    }
+    assert.deepEqual(bundledSkills, [...submoduleSkills, ...selfContainedSkills].sort());
   }
 });
 
@@ -248,17 +263,20 @@ for (const source of sources) {
     test(`${source} installs ops-direct-invoke for ${tool}`, () => {
       const { sandbox, target } = installPlugin("ops-direct-invoke", tool, source);
       const root = configRoot(target, tool);
-      const agent = tool === "codex" ? "ascendc-kernel-architect.toml" : "ascendc-kernel-architect.md";
-      const workflow = join(target, ".cannbot", "plugins", "ops-direct-invoke", "workflows");
-      const installedSkill = join(skillRoot(target, tool), "ascendc-env-check");
-      assert.equal(existsSync(join(installedSkill, "SKILL.md")), true);
-      assertSkillInstallation(installedSkill, source, "ops-direct-invoke", "ascendc-env-check");
+      const agent = tool === "codex" ? "architect.toml" : "architect.md";
+      const workflowScript = join(skillRoot(target, tool), "ops-direct-invoke-workflow", "scripts", "validate_state.py");
+      const installedSharedSkill = join(skillRoot(target, tool), "ascendc-env-check");
+      assert.equal(existsSync(join(installedSharedSkill, "SKILL.md")), true);
+      assertSkillInstallation(installedSharedSkill, source, "ops-direct-invoke", "ascendc-env-check");
       assert.equal(existsSync(join(skillRoot(target, tool), "gitcode-toolkit", "SKILL.md")), true);
+      assert.equal(existsSync(join(skillRoot(target, tool), "ops-direct-invoke-workflow", "SKILL.md")), true);
       assert.equal(existsSync(join(root, "agents", agent)), true);
-      assert.equal(existsSync(join(workflow, "scripts", "validate_state.py")), true);
+      assert.equal(existsSync(workflowScript), true);
+      assert.equal(existsSync(join(target, ".cannbot", "permissions", "PM.js")), true);
+      assert.equal(existsSync(join(target, ".cannbot", "settings.json")), true);
       const record = readPluginRecord(target, tool, "ops-direct-invoke");
-      assert.equal(record.skills.length, 21);
-      assert.equal(record.agents.length, 4);
+      assert.equal(record.skills.length, 44);
+      assert.equal(record.agents.length, 6);
       assert.equal(record.sourcePackage, sourcePackage);
       assert.equal(record.source.kind, source);
       assert.equal(record.skillInstallMode, source === "repository" ? "symlink" : "copy");
@@ -301,7 +319,7 @@ for (const source of sources) {
   }
 }
 
-for (const plugin of ["ops-direct-invoke", "ascendc-st-design", "model-infer-optimize"]) {
+for (const plugin of ["ascendc-st-design", "model-infer-optimize"]) {
   test(`${plugin} source init delegates to the unified installer`, () => {
     const { target } = installWithSourceInit(plugin, "opencode");
     const record = readPluginRecord(target, "opencode", plugin);
@@ -311,6 +329,17 @@ for (const plugin of ["ops-direct-invoke", "ascendc-st-design", "model-infer-opt
     assertUnifiedInstall(target, "opencode", plugin);
   });
 }
+
+test("ops-direct-invoke source init is a standalone installer", () => {
+  const { target } = installWithSourceInit("ops-direct-invoke", "opencode");
+  const root = configRoot(target, "opencode");
+  // 大 init.sh 直接完成装配：产出 cannbot-manifest.json、.cannbot/permissions 与 settings.json。
+  assert.equal(existsSync(join(root, "cannbot-manifest.json")), true);
+  assert.equal(existsSync(join(target, ".cannbot", "permissions", "PM.js")), true);
+  assert.equal(existsSync(join(target, ".cannbot", "settings.json")), true);
+  assert.equal(existsSync(join(root, "skills", "ops-direct-invoke-workflow", "SKILL.md")), true);
+  assert.equal(existsSync(join(root, "agents", "qa.md")), true);
+});
 
 test("source init defaults to the source repository root", () => {
   const sandbox = createSandbox("cannbot-init-default-");
@@ -432,7 +461,7 @@ test("multiple plugins keep independent instructions and install records", () =>
   const instructions = readFileSync(join(first.target, "AGENTS.md"), "utf8");
   assert.equal(instructions.match(/<!-- cannbot:ops-direct-invoke:start -->/g)?.length, 1);
   assert.equal(instructions.match(/<!-- cannbot:model-infer-optimize:start -->/g)?.length, 1);
-  assert.match(instructions, /^# CANNBot$/m);
+  assert.match(instructions, /^# PM$/m);
   assert.match(instructions, /^# NPU 模型推理优化入口$/m);
 
   const registry = JSON.parse(readFileSync(join(first.target, ".dsh", "cannbot-plugin.json"), "utf8"));

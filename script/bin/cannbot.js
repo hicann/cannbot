@@ -56,10 +56,20 @@ function parseArgs(argv) {
   for (let index = 0; index < rest.length; index += 1) {
     const key = rest[index];
     const value = rest[index + 1];
+    if (key === "--plugin-enable") {
+      if (!value || !rest[index + 2] || !["on", "off"].includes(rest[index + 2])) {
+        fail("--plugin-enable requires <name> <on|off>");
+      }
+      options.pluginEnable = value;
+      options.pluginEnableState = rest[index + 2];
+      index += 2;
+      continue;
+    }
     if (!value) fail(`missing value for ${key}`);
     if (key === "--tool") options.tool = value;
     else if (key === "--target") options.target = resolve(value);
     else if (key === "--source" || key === "--repo") options.source = resolve(value);
+    else if (key === "--mode") options.mode = value;
     else fail(`unknown option: ${key}`);
     index += 1;
   }
@@ -232,6 +242,15 @@ function resolveSkills(plugin, pluginDir) {
 function resolveSourceSkills(repositoryRoot, sourceDefinition) {
   const skillsRepository = resolve(repositoryRoot, sourceDefinition.skillsRepository);
   const skills = new Map();
+  const addSkill = (source, label) => {
+    const skillPath = join(source, "SKILL.md");
+    if (!existsSync(skillPath)) fail(`skill is missing SKILL.md: ${source}`);
+    const name = readFileSync(skillPath, "utf8").match(/^name:\s*([^\r\n]+)$/m)?.[1]?.trim();
+    if (!name) fail(`skill is missing a frontmatter name: ${skillPath}`);
+    if (skills.has(name)) fail(`duplicate Skill name in ${label}: ${name}`);
+    skills.set(name, source);
+  };
+
   for (const relativeSkill of sourceDefinition.skills) {
     if (typeof relativeSkill !== "string" || !relativeSkill) {
       fail(`invalid Skill path in ${sourceDefinition.definitionPath}`);
@@ -241,13 +260,19 @@ function resolveSourceSkills(repositoryRoot, sourceDefinition) {
     if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
       fail(`Skill path escapes its repository root: ${relativeSkill}`);
     }
-    const skillPath = join(source, "SKILL.md");
-    if (!existsSync(skillPath)) fail(`skill is missing SKILL.md: ${source}`);
-    const name = readFileSync(skillPath, "utf8").match(/^name:\s*([^\r\n]+)$/m)?.[1]?.trim();
-    if (!name) fail(`skill is missing a frontmatter name: ${skillPath}`);
-    if (skills.has(name)) fail(`duplicate Skill name in source definition: ${name}`);
-    skills.set(name, source);
+    addSkill(source, sourceDefinition.definitionPath);
   }
+
+  // Self-contained workflow skills shipped inside plugins/<id>/skills/.
+  const selfContainedRoot = join(sourceDefinition.pluginRoot, "skills");
+  if (existsSync(selfContainedRoot)) {
+    for (const entry of readdirSync(selfContainedRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && existsSync(join(selfContainedRoot, entry.name, "SKILL.md"))) {
+        addSkill(join(selfContainedRoot, entry.name), "self-contained skills");
+      }
+    }
+  }
+
   return [...skills.entries()].map(([name, source]) => ({ name, source }));
 }
 
@@ -513,6 +538,215 @@ function installOpenCodePlugin(target) {
   return { package: OPENCODE_PLUGIN_SPEC };
 }
 
+// ---------------------------------------------------------------------------
+// Workflow runtime assets (skill-driven workflow plugins).
+// These mirror the plugins/<id>/init.sh "default workspace" behavior so the
+// npm install path produces the same runtime scaffolding (permissions,
+// settings.json, per-client permission-guard hooks).
+// ---------------------------------------------------------------------------
+
+function parseFrontmatterValue(text, key) {
+  const match = text.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
+  return match ? match[1].replace(/^["']|["']$/g, "").trim() : "";
+}
+
+function parseFrontmatterList(text, key) {
+  const block = text.match(new RegExp(`^${key}:\\s*\\n([\\s\\S]*?)(?=^\\S|^---)|^${key}:\\s*\\[([^\\]]*)\\]`, "m"));
+  if (!block) return [];
+  const body = block[1] ?? block[2] ?? "";
+  return body
+    .split(/\n|,/)
+    .map((line) => line.replace(/^\s*-\s*/, "").replace(/["']/g, "").trim())
+    .filter(Boolean);
+}
+
+function readFrontmatter(path) {
+  const text = readFileSync(path, "utf8");
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  return { text, frontmatter: match ? match[1] : text };
+}
+
+function listPluginSkillDirs(pluginDir) {
+  const skillsRoot = join(pluginDir, "skills");
+  if (!existsSync(skillsRoot)) return [];
+  return readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("plugin-"))
+    .map((entry) => join(skillsRoot, entry.name))
+    .filter((dir) => existsSync(join(dir, "SKILL.md")));
+}
+
+function flowStages(pluginDir) {
+  const flowSkill = join(pluginDir, "skills", "ops-direct-invoke-workflow", "SKILL.md");
+  if (!existsSync(flowSkill)) return null;
+  const text = readFileSync(flowSkill, "utf8");
+  const matches = [...text.matchAll(/^\|\s*[⛔\s]*([0-9][0-9A-Za-z.]*|CP[0-9A-Za-z.]+)\s*\|/gm)];
+  return new Set(matches.map((match) => match[1]));
+}
+
+function installPermissions(pluginDir, target) {
+  const template = join(pluginDir, "skills", "workflow-agent-permissions", "hooks");
+  const destination = join(target, ".cannbot", "permissions");
+  if (!existsSync(template)) {
+    console.log("  note: workflow-agent-permissions hooks template not found; permissions not generated");
+    return null;
+  }
+  if (existsSync(destination) && readdirSync(destination).length) {
+    console.log(`  permissions/ already exists (${readdirSync(destination).length} files), keeping workspace config`);
+    return destination;
+  }
+  mkdirSync(destination, { recursive: true });
+  for (const entry of readdirSync(template, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".js")) {
+      cpSync(join(template, entry.name), join(destination, entry.name));
+    }
+  }
+  console.log(`  permissions/ generated from workflow-agent-permissions skill (${readdirSync(destination).length} files)`);
+  return destination;
+}
+
+function installRuntimeSettings(pluginDir, target, options) {
+  const pluginDirs = listPluginSkillDirs(pluginDir);
+  if (pluginDirs.length === 0) return null;
+
+  const stages = flowStages(pluginDir);
+  const records = new Map();
+  for (const dir of pluginDirs) {
+    const { frontmatter } = readFrontmatter(join(dir, "SKILL.md"));
+    const name = parseFrontmatterValue(frontmatter, "name") || basename(dir);
+    const hook = parseFrontmatterValue(frontmatter, "workflow-hook");
+    const stagesCsv = parseFrontmatterList(frontmatter, "workflow-stages");
+    const standalone = parseFrontmatterValue(frontmatter, "standalone") === "true";
+    if (!hook) {
+      console.warn(`  cannbot: plugin ${name}: frontmatter missing workflow-hook, not registered`);
+      continue;
+    }
+    if (!/^(after|before):[0-9A-Za-z]+(\.[0-9A-Za-z]+)*$/.test(hook)) {
+      console.warn(`  cannbot: plugin ${name}: invalid workflow-hook '${hook}', not registered`);
+      continue;
+    }
+    const hookTarget = hook.slice(hook.indexOf(":") + 1);
+    if (stages && !stages.has(hookTarget)) {
+      console.warn(`  cannbot: plugin ${name}: workflow-hook target '${hookTarget}' not found in base flow table, not registered`);
+      continue;
+    }
+    if (!stagesCsv.length) {
+      console.warn(`  cannbot: plugin ${name}: frontmatter missing workflow-stages, not registered`);
+      continue;
+    }
+    records.set(name, { hook, stages: stagesCsv, standalone, enabled: true });
+  }
+
+  const settingsPath = join(target, ".cannbot", "settings.json");
+  let config = {};
+  if (existsSync(settingsPath)) {
+    try {
+      const parsed = readJson(settingsPath);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed;
+    } catch {
+      console.warn(`  cannbot: settings.json 解析失败，将重建: ${settingsPath}`);
+    }
+  }
+
+  const existingPlugins = config.plugins && !Array.isArray(config.plugins) ? config.plugins : {};
+  let surveyed = Boolean(config.surveyed);
+  let hasNew = false;
+  const plugins = {};
+  for (const [name, record] of [...records.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const old = existingPlugins[name];
+    const enabled = old?.enabled ?? true;
+    if (!old) hasNew = true;
+    plugins[name] = { hook: record.hook, stages: record.stages, standalone: record.standalone, enabled };
+  }
+  if (hasNew) surveyed = false;
+
+  if (options.pluginEnable) {
+    if (!plugins[options.pluginEnable]) {
+      fail(`--plugin-enable target not registered: ${options.pluginEnable}`);
+    }
+    plugins[options.pluginEnable].enabled = options.pluginEnableState === "on";
+  }
+
+  const mode = options.mode || config.mode || "interactive";
+  const next = {
+    version: 2,
+    mode,
+    surveyed,
+    plugins,
+    updated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  };
+  writeJsonAtomic(settingsPath, next);
+  console.log(`  settings.json → ${settingsPath} (mode=${next.mode}, ${Object.keys(plugins).length} plugins)`);
+  return settingsPath;
+}
+
+function registerSettingsHook(settingsPath, hookRef, matcher) {
+  let existing = {};
+  if (existsSync(settingsPath)) {
+    try {
+      const parsed = readJson(settingsPath);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) existing = parsed;
+    } catch {
+      console.warn(`  cannbot: ${settingsPath} 解析失败，保留原文件未注册 hook`);
+      return false;
+    }
+  }
+  existing.hooks ??= {};
+  const groups = Array.isArray(existing.hooks.PreToolUse) ? existing.hooks.PreToolUse : [];
+  for (const group of groups) {
+    const current = group?.matcher ?? "";
+    for (const hook of group?.hooks ?? []) {
+      const blob = `${hook.command ?? ""} ${(hook.args ?? []).join(" ")}`;
+      if (blob.includes("permission-guard.js")) {
+        if (current.includes(matcher.split("|").at(-1))) return false;
+        group.matcher = `${current}|${matcher.split("|").at(-1)}`;
+        writeJsonAtomic(settingsPath, existing);
+        return true;
+      }
+    }
+  }
+  groups.push({ matcher, hooks: [{ type: "command", command: "node", args: [hookRef] }] });
+  existing.hooks.PreToolUse = groups;
+  writeJsonAtomic(settingsPath, existing);
+  return true;
+}
+
+function installNativeHooks(pluginDir, target, tool, assets) {
+  const configDir = toolConfigDir(target, tool);
+  if (tool === "claude") {
+    const source = join(pluginDir, "hooks", "claude", "permission-guard.js");
+    if (!existsSync(source)) return null;
+    mkdirSync(join(configDir, "hooks"), { recursive: true });
+    cpSync(source, join(configDir, "hooks", "permission-guard.js"));
+    registerSettingsHook(
+      join(configDir, "settings.json"),
+      "${CLAUDE_PROJECT_DIR}/.claude/hooks/permission-guard.js",
+      "Write|Edit|MultiEdit|NotebookEdit|Question",
+    );
+      return join(configDir, "settings.json");
+  }
+  if (tool === "trae") {
+    const source = join(pluginDir, "hooks", "trae", "permission-guard.js");
+    if (!existsSync(source)) return null;
+    mkdirSync(join(configDir, "hooks"), { recursive: true });
+    cpSync(source, join(configDir, "hooks", "permission-guard.js"));
+    registerSettingsHook(
+      join(configDir, "hooks.json"),
+      "${CLAUDE_PROJECT_DIR}/.trae/hooks/permission-guard.js",
+      "AskUserQuestion",
+    );
+    return join(configDir, "hooks.json");
+  }
+  if (tool === "opencode") {
+    const source = join(pluginDir, "hooks", "opencode", "permission-guard.js");
+    if (!existsSync(source)) return null;
+    mkdirSync(join(configDir, "plugin"), { recursive: true });
+    cpSync(source, join(configDir, "plugin", "permission-guard.js"));
+    return join(configDir, "plugin", "permission-guard.js");
+  }
+  console.log(`  note: ${tool} does not support project-level permission-guard hooks; role isolation is prompt-constrained`);
+  return null;
+}
+
 function install(options) {
   const sourceRoot = options.source ?? process.env.CANNBOT_SOURCE_ROOT ?? process.env.CANNBOT_SKILLS_PATH;
   const sourceRepositoryRoot = sourceRoot ? resolve(sourceRoot) : null;
@@ -543,7 +777,10 @@ function install(options) {
   const assets = installPluginAssets(pluginDir, plugin, options.target, sourceDefinition);
   const installedAgents = installAgents(pluginDir, plugin, options.tool, options.target, assets);
   const instructions = installInstructions(pluginDir, plugin, options.target, options.tool, assets);
-  const hookSettings = installClaudeHooks(pluginDir, options.target, options.tool, assets);
+  const permissionsDir = installPermissions(pluginDir, options.target);
+  const runtimeSettings = installRuntimeSettings(pluginDir, options.target, options);
+  const nativeHookSettings = installNativeHooks(pluginDir, options.target, options.tool, assets);
+  const hookSettings = installClaudeHooks(pluginDir, options.target, options.tool, assets) ?? nativeHookSettings;
   const dependencies = provisionDependencies(pluginDir, plugin, options.target, resolvedSkills);
   const nativePlugin = options.tool === "codex"
     ? installCodexPlugin(plugin, resolvedSkills, options.target, skillInstallMode)
@@ -563,10 +800,12 @@ function install(options) {
     agents: installedAgents.map((path) => path.slice(options.target.length + 1)),
     instructions: instructions?.slice(options.target.length + 1) ?? null,
     assets: assets?.relativeRoot ?? null,
+    permissions: permissionsDir?.slice(options.target.length + 1) ?? null,
+    settings: runtimeSettings?.slice(options.target.length + 1) ?? null,
     hookSettings: hookSettings?.slice(options.target.length + 1) ?? null,
     dependencies,
     nativePlugin,
-    unsupported: existsSync(join(pluginDir, "hooks")) && options.tool !== "claude" ? ["hooks"] : [],
+    unsupported: existsSync(join(pluginDir, "hooks")) && options.tool === "dsh" ? ["hooks"] : [],
   };
   updateInstallRegistry(join(configDir, "cannbot-plugin.json"), record);
 

@@ -23,22 +23,25 @@
       "category": "skills",
       "skills": [
         "./ascendc-api-best-practices",
-        "./ascendc-regbase-best-practice",
         "./ascendc-blaze-best-practice",
-        "./ascendc-blaze-migration",
-        "./ascendc-code-review",
+        "./ascendc-crash-debug",
         "./ascendc-direct-invoke-template",
+        "./ascendc-docs-gen",
         "./ascendc-docs-search",
         "./ascendc-env-check",
-        "./npu-arch",
+        "./ascendc-perf-optimize",
+        "./ascendc-performance-best-practices",
         "./ascendc-precision-debug",
-        "./ascendc-runtime-debug",
-        "./ascendc-crash-debug",
+        "./ascendc-regbase-best-practice",
+        "./ascendc-simt-best-practices",
+        "./ascendc-st-design",
         "./ascendc-tiling-design",
+        "./ascendc-ut-develop",
+        "./ascendc-whitebox-design",
+        "./npu-arch",
         "./ops-precision-standard",
         "./ops-profiling",
-        "./torch-ascendc-op-extension",
-        "./ascendc-mc2-best-practice"
+        "./ops-simulator"
       ]
     },
     {
@@ -57,10 +60,11 @@
       },
       "category": "skills",
       "skills": [
-        "./gitcode-toolkit",
-        "./gitcode-pr-handler",
+        "./cannbot-skill-reviewer",
         "./gitcode-issue-gen",
-        "./gitcode-issue-handler"
+        "./gitcode-issue-handler",
+        "./gitcode-pr-handler",
+        "./gitcode-toolkit"
       ]
     },
     {
@@ -117,8 +121,8 @@
     {
       "name": "ops-direct-invoke",
       "source": "./plugins/ops-direct-invoke",
-      "description": "Ascend C Kernel 直调算子开发 Team。含完整工作流（设计→实现→审查→性能验收）、4 个专业 Agent 和工程模板。",
-      "version": "1.2.5",
+      "description": "skill 驱动的多角色直调算子开发工作流 Team。PM 调度 architect / developer(-code/-test/-doc) / qa 六角色，8 阶段 7 CP 全流程（需求→设计→开发→验收→上库），支持静默模式、可插拔流程插件与算子仓继承定制。",
+      "version": "2.0.0",
       "author": {
         "name": "CANNBot"
       },

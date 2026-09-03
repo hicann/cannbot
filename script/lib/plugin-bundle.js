@@ -73,6 +73,19 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
     if (!existsSync(skillsLicense)) throw new Error(`Skill repository license is missing: ${skillsLicense}`);
     cpSync(skillsLicense, join(destination, "SKILLS_LICENSE"));
     const names = new Set();
+
+    const copySkill = (skillSource, skillName) => {
+      if (names.has(skillName)) throw new Error(`duplicate Skill name in ${pluginId}: ${skillName}`);
+      names.add(skillName);
+      const skillDestination = join(destination, "skills", skillName);
+      cpSync(skillSource, skillDestination, { recursive: true, dereference: true });
+      const skillManifest = join(skillDestination, "SKILL.md");
+      const skillMd = readFileSync(skillManifest, "utf8")
+        .replace(/^disable-model-invocation:\s*true\s*$/m, "disable-model-invocation: false");
+      writeFileSync(skillManifest, skillMd);
+    };
+
+    // Shared skills pulled from the Skill submodule (plugin-sources.json).
     for (const relativeSkill of source.skills) {
       if (typeof relativeSkill !== "string" || !relativeSkill) {
         throw new Error(`invalid Skill path in ${source.definitionPath}`);
@@ -82,16 +95,20 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
       if (!existsSync(join(skillSource, "SKILL.md"))) {
         throw new Error(`Skill is missing SKILL.md: ${relativeSkill}`);
       }
-      const name = basename(skillSource);
-      if (names.has(name)) throw new Error(`duplicate Skill name in ${pluginId}: ${name}`);
-      names.add(name);
-      const skillDestination = join(destination, "skills", name);
-      cpSync(skillSource, skillDestination, { recursive: true, dereference: true });
-      const skillManifest = join(skillDestination, "SKILL.md");
-      const manifest = readFileSync(skillManifest, "utf8")
-        .replace(/^disable-model-invocation:\s*true\s*$/m, "disable-model-invocation: false");
-      writeFileSync(skillManifest, manifest);
+      copySkill(skillSource, basename(skillSource));
     }
+
+    // Self-contained workflow skills shipped inside the plugin (skills/).
+    const localSkillsRoot = join(source.pluginRoot, "skills");
+    if (existsSync(localSkillsRoot)) {
+      for (const entry of readdirSync(localSkillsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const skillSource = join(localSkillsRoot, entry.name);
+        if (!existsSync(join(skillSource, "SKILL.md"))) continue;
+        copySkill(skillSource, entry.name);
+      }
+    }
+
     manifest.skills = [...names].map((name) => `./skills/${name}`);
     delete manifest.dependencies;
     writeFileSync(

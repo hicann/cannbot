@@ -28,7 +28,7 @@ bash init.sh
 
 | 插件 | 能力 |
 |------|------|
-| [`ops-direct-invoke`](plugins/ops-direct-invoke/) | Ascend C Kernel 直调开发、审查、精度与性能验收 |
+| [`ops-direct-invoke`](plugins/ops-direct-invoke/) | skill 驱动的多角色直调算子开发工作流：8 阶段 7 CP 全流程、静默模式、可插拔流程插件、算子仓继承定制 |
 | [`ascendc-st-design`](plugins/ascendc-st-design/) | Ascend C 算子 L0/L1/L2 ST 用例设计 |
 | [`model-infer-optimize`](plugins/model-infer-optimize/) | NPU 模型迁移、精度对齐与推理性能优化 |
 
