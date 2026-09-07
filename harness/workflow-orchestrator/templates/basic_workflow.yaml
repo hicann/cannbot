@@ -1,0 +1,92 @@
+# Workflow definition template. Every key is mandatory and explicit — the
+# orchestrator applies no defaults, so a missing key is a validation error.
+
+workflow: basic-demo                    # str. Name; recorded in the .workflow/log.jsonl init event.
+
+max_parallel: 2                         # int ≥ 1. Max simultaneously in-flight tasks; caps each dispatch batch.
+
+nodes:                                  # Task nodes. depends_on edges drive execution order; listing order is irrelevant.
+  - id: setup-env                       # str. Globally unique; keys the tasks table in status.json and every depends_on.
+    task_type: normal                  # "normal" | "subgraph" — the latter carries only id/task_type/file/depends_on (last node).
+    title: Set up build environment     # str. One-liner; rendered as "[id] title" in dispatch prompts.
+    goal:                               # list[str], non-empty. What done means. Appears in both execute and verify prompts.
+      - Build and runtime environment ready
+      - Produce the tool inventory file env.list
+    approach:                           # list[str], non-empty. Suggested path. Execute prompt only.
+      - Check dependency tool versions
+      - Record missing tools in env.list
+    acceptance:                         # list[str], non-empty. Verify-phase verdict criteria; may be shell checks.
+      - test -f env.list
+      - every tool listed in env.list resolves via which
+    out_of_scope:                       # list[str], non-empty. Explicitly excluded work.
+      - Installing any missing tool
+      - Changing system configuration
+    depends_on: []                      # list[str]. Node ids; dispatches only when all of them pass. [] = no deps.
+    executor: general-executor          # str. Subagent for the execute phase (pending → running).
+    verifier: general-verifier          # str. Subagent for the verify phase (executed → verifying).
+    max_retries: 2                      # int ≥ 0. Verify-fail budget: within budget → back to pending, else exit.
+    on_exhaust: exit                    # "exit" | "continue". Budget exhausted: exit halts the workflow; continue keeps dispatching others.
+
+  - id: implement-op              
+    task_type: normal      # Single-dependency node.
+    title: Implement the add operator
+    goal:
+      - Implement the add operator in the demo repo
+    approach:
+      - Interface first, then implementation, then unit tests
+    acceptance:
+      - All unit tests pass
+      - No new dependencies introduced
+    out_of_scope:
+      - Performance tuning
+    depends_on:
+      - setup-env
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 2
+    on_exhaust: exit
+
+  - id: e2e-report              
+    task_type: normal        # Multi-dependency node. Nodes with disjoint deps dispatch in parallel.
+    title: Run end-to-end validation and write the report
+    goal:
+      - Run the end-to-end suite and produce report.md
+    approach:
+      - Reuse the repo's existing e2e entry point
+    acceptance:
+      - test -s report.md
+      - report.md lists the cases run and the conclusion
+    out_of_scope:
+      - Fixing issues found by e2e; record them only
+    depends_on:
+      - setup-env
+      - implement-op
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 1
+    on_exhaust: exit
+
+  - id: gen-report-subgraph            # Normal node that produces the subgraph file consumed by the next node.
+    task_type: normal
+    title: Generate the report subgraph
+    goal:
+      - Produce report/report-sub-graph.yaml, one node per report section
+    approach:
+      - Enumerate sections; emit one normal-task node per section
+    acceptance:
+      - test -f report/report-sub-graph.yaml
+      - the file parses as YAML with a single top-level key nodes
+    out_of_scope:
+      - Writing any report section itself
+    depends_on:
+      - implement-op
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 2
+    on_exhaust: exit
+
+  - id: run-report-subgraph            # Subgraph node: exactly 4 keys, no executor/verifier/max_retries.
+    task_type: subgraph                # "subgraph". When its deps pass, get_task.py materializes the child tasks
+    file: report/report-sub-graph.yaml # str. Sub-workflow yaml (top-level key `nodes`), relative to work_dir; produced upstream, need not exist yet.
+    depends_on:
+      - gen-report-subgraph
