@@ -15,21 +15,32 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
 启动分流：
 - $WORK_DIR/.workflow/status.json 不存在 → 必须 --prompt，委托 init_status.py 初始化后进主循环
 - 已存在 → 恢复执行（传了 --prompt 则打警告）；先重置瞬态：running→pending、verifying→executed
-  （瞬态是进程内的，崩溃后滞留会造成永久在飞 → 死锁）
+  （瞬态是进程内的，编排器进程被杀后滞留会造成永久在飞 → 死锁）
 
-主循环（轮次制，D1）：
-- get_task.py 出批次 → 主线程逐个 update_status 占坑（pending→running / executed→verifying，
-  回复传空串）→ 线程池并发跑 agent → 主线程逐个 update_status 回收（回复由 provider.parse_reply
-  从 stdout 提取；原始 stdout 存档到 .workflow/sessions/<task_id>.<phase>.<时间戳>.jsonl）。两次 update 均在主线程串行，避免并发写坏 status.json。
-- get_task 输出映射（D3）：batch → 执行；[ALL TASK FINISHED] → 报告 exit 0；
-  [STUCK]（重试预算耗尽等）→ 报告 exit 1；[] → 原地重置瞬态再试，连续 3 轮仍空 → exit 2。
-- agent 进程退出码非零 = 基础设施故障：立即停机 exit 2，任务留在瞬态，重跑本命令自动恢复。
+主循环（事件驱动补位）：
+- 常驻唯一 ThreadPoolExecutor（容量 = workflow yaml 的 max_parallel，启动时读取）。
+  主线程独占调度与 status.json 写入：收割已完成 → 调 get_task.py 要新批次 → 串行预占
+  （pending→running / executed→verifying，回复传空串）→ submit → wait(FIRST_COMPLETED)。
+  任一任务完成即收割即补位，无批内 barrier：快任务验证 pass 后，只依赖它的下游立即
+  拉起，不等同批慢任务。原始 stdout 存档到 .workflow/sessions/<task_id>.<phase>.<时间戳>.jsonl。
+- 崩溃 = 一次失败：agent 进程退出码非零 → log crash 事件 → update_status 传 $CRASH
+  （落 fail、retries+1、吃重试预算）→ 照常调度。预算内 get_task 下一轮自动重排重试
+  （本次运行内自愈）；耗尽后由 on_exhaust 裁决（exit → [STUCK]；continue → 跳过
+  该节点及其全部下游依赖）。
+  拉起级失败（provider 二进制缺失等 Popen OSError）→ 主循环异常 exit 2，
+  任务留瞬态，重跑恢复，不吃预算。
+- 排干守卫：终结信号（[ALL TASK FINISHED]/[STUCK]）到达时仍有在飞任务 → 停止派发，
+  等在飞全部收尾并回收后重新裁决，杜绝孤儿 agent 进程。
+- get_task 输出映射：batch → 派发；[ALL TASK FINISHED] 无 skipped → exit 0；
+  带 skipped（耗尽+continue 的跳过任务清单）→ 报告跳过清单，exit 1；[STUCK] → exit 1；
+  [] → 有在飞则等待，无在飞则原地重置瞬态再试，连续 3 轮仍空 → exit 2。
 - 单实例互斥：.workflow/orchestrator.lock（pid + 存活探测，陈旧锁自动接管）。
   所有 status.json 写入均为临时文件 + rename 原子替换，写半截崩溃不损坏旧文件。
 
 --dry-run（UT 专用）：不拉起真 CLI，回复取 $WORK_DIR/.workflow/dry_replies.json：
 {"task_id": ["回复", ...]}，FIFO、跨 execute/verify 按调用顺序消费；"$CRASH" 模拟进程
-崩溃；未配置/耗尽的条目按阶段给默认回复（execute→executed，verify→pass）。
+崩溃；"$SLEEP:<秒>" 模拟慢任务（睡眠后返回阶段默认回复）；未配置/耗尽的条目按阶段给
+默认回复（execute→executed，verify→pass）。
 """
 import argparse
 import atexit
@@ -37,13 +48,18 @@ import json
 import os
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
+
+import yaml
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 CRASH = "$CRASH"
+SLEEP_PREFIX = "$SLEEP:"
 MAX_EMPTY_ROUNDS = 3
+TERMINAL_RESULTS = ("[ALL TASK FINISHED]", "[STUCK]")  # get_task 终结裁决的合法 result
 
 
 class Provider(ABC):
@@ -168,6 +184,16 @@ def load_status(work_dir):
         return json.load(f)
 
 
+def read_max_parallel(work_dir):
+    """从 status.json 指向的 workflow yaml 读 max_parallel（常驻线程池容量）。"""
+    try:
+        wf = load_status(work_dir)["workflow"]
+        with open(wf, encoding="utf-8") as f:
+            return yaml.safe_load(f)["max_parallel"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, yaml.YAMLError):
+        return None
+
+
 def save_status(work_dir, status):
     path = os.path.join(work_dir, ".workflow", "status.json")
     tmp = path + ".tmp"  # 原子写：写半截崩溃不损坏旧文件
@@ -227,9 +253,18 @@ def session_path(work_dir, task_id, phase):
 
 def dry_reply(dry_map, task_id, phase):
     seq = dry_map.get(task_id)
+    default = "pass" if phase == "verify" else "executed"
     if isinstance(seq, list) and seq:
-        return str(seq.pop(0))
-    return "pass" if phase == "verify" else "executed"
+        r = str(seq.pop(0))
+        if r.startswith(SLEEP_PREFIX):  # 模拟慢任务：睡眠后返回阶段默认回复
+            try:
+                time.sleep(float(r[len(SLEEP_PREFIX):]))
+            except (ValueError, OverflowError) as e:
+                # 非法令牌属测试数据 bug，fail fast：静默降级默认回复会让 UT 假通过
+                raise ValueError("非法 $SLEEP 令牌 %r: %s" % (r, e)) from e
+            return default
+        return r
+    return default
 
 
 def update(work_dir, task_id, reply):
@@ -244,77 +279,167 @@ def report(work_dir):
         print("[orchestrator]   %s: %s (retries=%d)" % (tid, t["status"], t.get("retries", 0)))
 
 
+def run_agent(entry, provider, work_dir, dry_map):
+    """worker 线程体：执行一个派发条目，返回 (reply, crashed)；不碰 status.json。"""
+    if dry_map is not None:
+        reply = dry_reply(dry_map, entry["task_id"], entry["_phase"])
+        return reply, reply == CRASH
+    path = session_path(work_dir, entry["task_id"], entry["_phase"])
+    with open(path, "wb") as f, subprocess.Popen(
+            provider.build_command(entry["agent"], entry["prompt"]),
+            cwd=work_dir, stdout=f, stderr=subprocess.PIPE) as p:
+        stderr = p.stderr.read().decode("utf-8", "replace")
+        rc = p.wait()
+    if rc != 0:  # 失败也存档：exit/stderr 追加在尾部，供排查基础设施故障
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\nexit=%d\n%s" % (rc, stderr))
+        return None, True
+    with open(path, encoding="utf-8") as f:
+        return provider.parse_reply(f.read()), False
+
+
+def harvest_done(work_dir, inflight):
+    """收割已完成的 future（主线程串行调用，status.json 唯一写入路径）。
+
+    崩溃 = 一次失败：log crash 事件、update_status 传 $CRASH（落 fail、吃预算）；
+    正常回复原样传递。单任务更新失败仅记录不停机。
+    """
+    for future in [x for x in inflight if x.done()]:
+        entry = inflight.pop(future)
+        reply, crashed = future.result()
+        if crashed:
+            log_event(work_dir, event="crash", task_id=entry["task_id"])
+            reply = CRASH
+        rc = update(work_dir, entry["task_id"], reply).returncode
+        if rc != 0:
+            # 单任务更新失败不停机：可能因 agent 越权直改 status.json 等。
+            # 记录后继续回收其余任务，交由下一轮调度重试/告警。
+            err("状态更新失败: %s (reply=%r)，跳过并继续"
+                % (entry["task_id"], reply[:200]))
+
+
+def terminal_exit(work_dir, verdict):
+    """终结裁决 → 退出码：全部 pass → 0；部分完成（有跳过）→ 1；STUCK → 1。"""
+    skipped = verdict.get("skipped") or []
+    reason = verdict.get("reason", "")
+    if verdict["result"] == "[STUCK]":
+        msg, event, code = ("工作流卡住: %s" % reason,
+                            dict(event="stuck", reason=reason), 1)
+    elif skipped:
+        msg, event, code = ("工作流部分完成（跳过: %s）" % ", ".join(skipped),
+                            dict(event="finish", result="partial",
+                                 skipped=skipped), 1)
+    else:
+        msg, event, code = "工作流完成", dict(event="finish", result="ok"), 0
+    print("[orchestrator] %s" % msg)
+    report(work_dir)
+    log_event(work_dir, **event)
+    return code
+
+
+class LoopContext:
+    """主循环运行上下文与轮间状态；仅主线程读写（worker 只跑 run_agent）。"""
+
+    def __init__(self, work_dir, provider, dry_map, executor):
+        self.work_dir = work_dir
+        self.provider = provider
+        self.dry_map = dry_map
+        self.executor = executor          # 常驻共享线程池
+        self.inflight = {}                # future → 派发条目
+        self.empty_rounds = 0             # 连续空轮计数（自愈 3 轮上限）
+
+
+def ask_get_task(work_dir):
+    """调 get_task.py 并解析校验输出：返回 (结果, 退出码)；退出码非 None 时循环应终止。
+
+    合法性一次判尽（list 批次 / TERMINAL_RESULTS 终结 dict），下游不再重复校验。
+    """
+    proc = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "get_task.py"), work_dir],
+        capture_output=True, text=True)
+    if proc.returncode == 2:
+        sys.stderr.write(proc.stderr)
+        return None, 2
+    try:
+        out = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None, err("get_task 输出无法解析: %r" % proc.stdout)
+    if not (isinstance(out, list)
+            or (isinstance(out, dict) and out.get("result") in TERMINAL_RESULTS)):
+        return None, err("get_task 输出无法解析: %r" % proc.stdout)
+    return out, None
+
+
+def dispatch_batch(ctx, batch):
+    """预占任务状态并提交一批任务（主线程串行）；成功返回 None，否则返回退出码。"""
+    status = load_status(ctx.work_dir)
+    for entry in batch:
+        # 记阶段供 dry-run 默认回复与 session 存档：pending→execute、executed→verify
+        entry["_phase"] = (
+            "verify"
+            if status["tasks"][entry["task_id"]]["status"] == "executed"
+            else "execute")
+        if update(ctx.work_dir, entry["task_id"], "").returncode != 0:
+            return err("任务状态预占失败: %s" % entry["task_id"])
+    for entry in batch:
+        ctx.inflight[ctx.executor.submit(
+            run_agent, entry, ctx.provider, ctx.work_dir, ctx.dry_map)] = entry
+    return None
+
+
+def loop_step(ctx):
+    """单轮调度：收割 → 问 get_task → 派发/自愈 → 等待任一完成。
+
+    返回 None 表示继续下一轮，否则为进程退出码。
+    """
+    # ① 收割已完成
+    harvest_done(ctx.work_dir, ctx.inflight)
+    # ② 问 get_task 要裁决 / 新批次（每次收割后立即补位，无批内 barrier；
+    #    输出合法性已由 ask_get_task 一次判尽）
+    next_tasks, exit_code = ask_get_task(ctx.work_dir)
+    if exit_code is not None:
+        return exit_code
+    if isinstance(next_tasks, dict):  # 终结裁决
+        if ctx.inflight:
+            # 排干：终结信号到达时仍有在飞 → 等收割后由下一轮 get_task 重裁决
+            # （exhausted 标记粘滞且短路先于批次选择，裁决必然复现），不留孤儿进程
+            wait(list(ctx.inflight), return_when=FIRST_COMPLETED)
+            return None
+        return terminal_exit(ctx.work_dir, next_tasks)
+    if next_tasks:
+        # 派发（预占 + submit）后直落 ③ 等待，省一次必然空批的 get_task 调用
+        ctx.empty_rounds = 0
+        exit_code = dispatch_batch(ctx, next_tasks)
+        if exit_code is not None:
+            return exit_code
+    elif not ctx.inflight:
+        # 空轮自愈（仅无在飞时）：任务滞留瞬态 → 重置再试，直接进下一轮不等待
+        ctx.empty_rounds += 1
+        if ctx.empty_rounds > MAX_EMPTY_ROUNDS:
+            return err("连续 %d 轮无可派发任务" % MAX_EMPTY_ROUNDS)
+        reset_transient(ctx.work_dir)
+        return None
+    # ③ 等任一完成 → 回 ①
+    wait(list(ctx.inflight), return_when=FIRST_COMPLETED)
+    return None
+
+
 def loop(work_dir, provider, dry_map):
-    empty_rounds = 0
-    while True:
-        r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "get_task.py"), work_dir],
-                           capture_output=True, text=True)
-        if r.returncode == 2:
-            sys.stderr.write(r.stderr)
-            return 2
-        try:
-            out = json.loads(r.stdout)
-        except json.JSONDecodeError:
-            return err("get_task 输出无法解析: %r" % r.stdout)
+    max_parallel = read_max_parallel(work_dir)
+    if (not isinstance(max_parallel, int) or isinstance(max_parallel, bool)
+            or max_parallel < 1):
+        return err("无法从 workflow yaml 读取合法的 max_parallel")
 
-        if isinstance(out, dict):
-            if out.get("result") == "[ALL TASK FINISHED]":
-                print("[orchestrator] 工作流完成")
-                report(work_dir)
-                log_event(work_dir, event="finish", result="ok")
-                return 0
-            if out.get("result") == "[STUCK]":
-                reason = out.get("reason", "")
-                print("[orchestrator] 工作流卡住: %s" % reason)
-                report(work_dir)
-                log_event(work_dir, event="stuck", reason=reason)
-                return 1
-            return err("get_task 输出无法解析: %r" % r.stdout)
-
-        if not isinstance(out, list) or not out:
-            # 轮次制下 [] 仅当 verifying 收到非 pass/fail 回复（任务滞留瞬态）：重置后重试
-            empty_rounds += 1
-            if empty_rounds > MAX_EMPTY_ROUNDS:
-                return err("连续 %d 轮无可派发任务" % MAX_EMPTY_ROUNDS)
-            reset_transient(work_dir)
-            continue
-        empty_rounds = 0
-
-        # 占坑（主线程串行）：pending→running / executed→verifying；记阶段供 dry-run 默认回复
-        status = load_status(work_dir)
-        for d in out:
-            d["_phase"] = "verify" if status["tasks"][d["task_id"]]["status"] == "executed" else "execute"
-            if update(work_dir, d["task_id"], "").returncode != 0:
-                return err("占坑失败: %s" % d["task_id"])
-
-        def agent(d):
-            if dry_map is not None:
-                reply = dry_reply(dry_map, d["task_id"], d["_phase"])
-                return reply, reply == CRASH
-            path = session_path(work_dir, d["task_id"], d["_phase"])
-            with open(path, "wb") as f, subprocess.Popen(
-                    provider.build_command(d["agent"], d["prompt"]),
-                    cwd=work_dir, stdout=f, stderr=subprocess.PIPE) as p:
-                stderr = p.stderr.read().decode("utf-8", "replace")
-                rc = p.wait()
-            if rc != 0:  # 失败也存档：exit/stderr 追加在尾部，供排查基础设施故障
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write("\nexit=%d\n%s" % (rc, stderr))
-                return None, True
-            with open(path, encoding="utf-8") as f:
-                return provider.parse_reply(f.read()), False
-
-        with ThreadPoolExecutor(max_workers=len(out)) as ex:
-            results = list(ex.map(agent, out))
-        if any(crash for _, crash in results):
-            log_event(work_dir, event="crash")
-            return err("agent 进程失败（基础设施故障），停机；重跑本命令可恢复")
-        for d, (reply, _) in zip(out, results):
-            rc = update(work_dir, d["task_id"], reply).returncode
-            if rc != 0:
-                # 单任务更新失败不停机：可能因 agent 越权直改 status.json 造成终态冲突等。
-                # 记录后继续回收其余任务，交由下一轮调度重试/告警。
-                err("状态更新失败: %s (reply=%r)，跳过并继续" % (d["task_id"], reply[:200]))
+    # 常驻共享池 + 全部轮间状态聚合进 ctx（仅主线程读写）
+    ctx = LoopContext(work_dir, provider, dry_map,
+                      ThreadPoolExecutor(max_workers=max_parallel))
+    try:
+        while True:
+            exit_code = loop_step(ctx)
+            if exit_code is not None:
+                return exit_code
+    finally:
+        ctx.executor.shutdown()
 
 
 def main():
@@ -365,7 +490,7 @@ def main():
             dry_map = {}
     try:
         return loop(args.work_dir, PROVIDERS.get(args.provider), dry_map)
-    except (OSError, json.JSONDecodeError, KeyError) as e:
+    except (OSError, KeyError, ValueError) as e:  # JSONDecodeError ⊂ ValueError，不重复捕获
         return err("主循环异常: %s" % e)
 
 

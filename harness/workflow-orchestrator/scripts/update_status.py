@@ -13,16 +13,19 @@ python3 update_status.py <task_id> <work_dir> <agent_reply>   （agent_reply = a
 
 读 $WORK_DIR/.workflow/status.json，打印任务当前状态并按回复分类迁移：
 
-回复分类（pass/fail/executed/others）：取最后一条非空行，忽略大小写与结尾
-标点后须恰好等于关键词——协议要求整条回复只有关键词，宽松包含匹配会把
-"the fix did not pass" 误判成 pass，宁误判 others（可重试）不误判 pass。
+回复分类（pass/fail/executed/crash/others）：先判整条 strip 后恰为 "$CRASH"
+（orchestrator 对崩溃的 agent 进程注入的令牌）→ crash；否则取最后一条非空行，
+忽略大小写与结尾标点后须恰好等于关键词——协议要求整条回复只有关键词，宽松
+包含匹配会把 "the fix did not pass" 误判成 pass，宁误判 others（可重试）不误判 pass。
 
 状态机：
 - pending   + 任意回复   → running
 - executed  + 任意回复   → verifying
-- running   + 任意回复   → executed（不校验回复关键词，由 verifier 把关）
+- running   + crash      → fail 且 retries+1（崩溃 = 一次失败，宽松规则的例外）
+- running   + 其他回复   → executed（不校验回复关键词，由 verifier 把关）
 - verifying + pass       → pass
 - verifying + fail       → fail 且 retries+1（是否重试由调度方按 max_retries/on_exhaust 决定）
+- verifying + crash      → fail 且 retries+1（同 verifying + fail）
 - verifying + 其他       → verifying（不动，不写回）
 
 pass/fail 为终态，拒绝更新。有变化时写回 status.json 并追加 log.jsonl。
@@ -36,6 +39,7 @@ import sys
 from datetime import datetime
 
 KEYWORDS = ("pass", "fail", "executed")
+CRASH = "$CRASH"
 
 
 def fail(msg):
@@ -47,6 +51,8 @@ def classify(reply):
     r = reply.strip()
     if not r:
         return "others"
+    if r == CRASH:
+        return "crash"
     # 优先末行；否则从后向前找恰好等于关键词的行（agent 偶发在协议词后追加总结）。
     # 仍要求整行精确匹配："the fix did not pass" 不会误判为 pass（宁误判 others）。
     lines = [l.strip().lower().rstrip("。.!！?？;；,，") for l in r.splitlines() if l.strip()]
@@ -63,8 +69,10 @@ def transition(cur, cls):
     if cur == "executed":
         return "verifying"
     if cur == "running":
-        return "executed"
+        return "fail" if cls == "crash" else "executed"
     if cur == "verifying":
+        if cls == "crash":
+            return "fail"
         return cls if cls in ("pass", "fail") else "verifying"
     return None
 
@@ -96,7 +104,7 @@ def main():
         return fail("任务 %s 状态 %r 无迁移规则（pass/fail 为终态，非法状态拒绝更新）"
                     % (args.task_id, cur))
 
-    retry = cur == "verifying" and cls == "fail"
+    retry = new == "fail"
     print("[update_status] %s: %s → %s (reply=%s)" % (args.task_id, cur, new, cls))
     if new == cur and not retry:  # verifying + others：无变化，不写回
         return 0

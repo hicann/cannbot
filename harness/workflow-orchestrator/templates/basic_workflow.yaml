@@ -24,8 +24,8 @@ nodes:                                  # Task nodes. depends_on edges drive exe
     depends_on: []                      # list[str]. Node ids; dispatches only when all of them pass. [] = no deps.
     executor: general-executor          # str. Subagent for the execute phase (pending → running).
     verifier: general-verifier          # str. Subagent for the verify phase (executed → verifying).
-    max_retries: 2                      # int ≥ 0. Verify-fail budget: within budget → back to pending, else exit.
-    on_exhaust: exit                    # "exit" | "continue". Budget exhausted: exit halts the workflow; continue keeps dispatching others.
+    max_retries: 2                      # int ≥ 0. Failure budget (verify-fail and crash each cost one): within budget → back to pending; exhausted → on_exhaust decides.
+    on_exhaust: exit                    # "exit" | "continue". Budget exhausted: exit halts the workflow (exit 1); continue skips the node and its transitive dependents, other branches run to completion (partial finish, exit 1).
 
   - id: implement-op              
     task_type: normal      # Single-dependency node.

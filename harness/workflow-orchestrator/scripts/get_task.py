@@ -23,11 +23,15 @@ depends_on 引用存在且无环），物化子图，再选取派发批次：
   subgraph 容器本身不注册状态（分组不是任务，状态由 eff() 实时聚合，不占 max_parallel）。
 - 批次 ≤ max_parallel − 在飞（running/verifying）数
 - 重试策略：fail 且 retries ≤ max_retries → 写回 pending 自动重试（含子图子任务）；
-  超预算 → 打 exhausted 标记并直接 [STUCK]（短路，本轮不派发任何任务）
+  超预算 → 打 exhausted 标记，按 on_exhaust 分流：exit → [STUCK]（短路，本轮不派发
+  任何任务）；continue → 耗尽节点及其全部（传递）下游构成跳过任务集合（含子图容器
+  聚合规则：全部子任务 ∈ {pass}∪跳过集合 且至少一个 ∈ 跳过集合 → 容器加入），
+  不再派发，其余分支照常执行
 
 stdout（唯一输出）：
 - 有派发 → [{"task_id","agent","prompt"}, ...]                     exit 0
-- 全部 pass → {"result": "[ALL TASK FINISHED]"}                     exit 0
+- 全部 pass/skipped → {"result": "[ALL TASK FINISHED]",
+  "skipped": [...]}（skipped 仅存在跳过任务时出现，为全量清单）      exit 0
 - 有在飞 → []                                                       exit 0
 - 其余（依赖不满足 / fail 未决）→ {"result": "[STUCK]", "reason": …} exit 1
 校验/读写失败 → stderr 报错并 exit 2。
@@ -160,6 +164,44 @@ def load_subgraph(path):
     return cfg["nodes"], None
 
 
+def compute_skipped_tasks(stream, tasks, node_by_id, sub_ids):
+    """跳过任务集合：fail+exhausted+on_exhaust=continue 为种子，沿依赖边传递到全部下游。
+
+    种子永远不会 pass，其（传递）依赖者也就永远不会被派发，一并跳过。
+    子图容器两条互斥的加入途径（已物化容器的依赖必全 pass，pass 终态不会成种子）：
+    - 未物化：容器自身 depends_on 命中跳过集合；
+    - 已物化：全部子任务 ∈ {pass}∪跳过集合 且至少一个 ∈ 跳过集合。
+    """
+    node_of = {tid: node for node, tid, _ in stream}
+    dep_of = {tid: deps for _, tid, deps in stream}
+    skipped = set()
+    for tid, entry in tasks.items():
+        if entry.get("status") == "fail" and entry.get("exhausted"):
+            node = node_of.get(tid)
+            if node is not None and node["on_exhaust"] == "continue":
+                skipped.add(tid)
+    growing = True
+    while growing:
+        growing = False
+        for tid, deps in dep_of.items():
+            if tid not in skipped and any(d in skipped for d in deps):
+                skipped.add(tid)
+                growing = True
+        for sg in sub_ids:
+            if sg in skipped:
+                continue
+            if any(d in skipped for d in node_by_id[sg]["depends_on"]):
+                skipped.add(sg)
+                growing = True
+                continue
+            kids = [k for k in dep_of if k.startswith(sg + "/")]
+            if kids and any(k in skipped for k in kids) and all(
+                    k in skipped or tasks[k]["status"] == "pass" for k in kids):
+                skipped.add(sg)
+                growing = True
+    return skipped
+
+
 def build_prompt(node, phase, work_dir, user_prompt):
     """execute 阶段含 Approach 与 executed 协议句；verify 阶段无 Approach，要求 pass/fail。"""
     def block(name, items):
@@ -224,9 +266,15 @@ def main():
         return fail("status.json 的 user_prompt 指向不存在的文件: %r" % up_path)
     work_dir = status.get("work_dir") or os.path.abspath(args.work_dir)
 
-    def eff(tid):
-        """有效状态：subgraph 由子任务实时聚合（无子任务=pending，全 pass=pass，否则 running）。
-        容器不进 status.json，聚合只看子任务。"""
+    def eff(tid, skipped=frozenset()):
+        """有效状态：跳过集合内 → skipped；subgraph 由子任务实时聚合
+        （无子任务=pending，全 pass=pass，否则 running）。容器不进 status.json。
+
+        skipped 显式传参：materialize 阶段用默认空集（跳过集合彼时尚未计算，
+        维持旧语义）；stream 构建后各调用点传 compute_skipped_tasks 的结果。
+        """
+        if tid in skipped:
+            return "skipped"
         if tid not in sub_ids:
             return tasks[tid]["status"]
         kids = [k for k in tasks if k.startswith(tid + "/")]
@@ -254,8 +302,9 @@ def main():
             if kid not in tasks:
                 tasks[kid] = {"status": "pending", "retries": 0}
                 changed = True
-    # 重试策略：预算内 fail → pending 重试；超预算 → exhausted 标记（写回后短路 STUCK）
-    exhausted = []
+    # 重试策略：预算内 fail → pending 重试；超预算 → exhausted 标记，
+    # on_exhaust=exit 短路 STUCK；continue 交由跳过任务集合处理
+    exhausted_exit = []
     for tid, entry in tasks.items():
         if entry.get("status") != "fail":
             continue
@@ -267,12 +316,15 @@ def main():
             continue
         if entry.get("retries", 0) <= node["max_retries"]:
             entry["status"] = "pending"
+            entry.pop("exhausted", None)  # 用户调大 max_retries 后重试，清除历史耗尽标记
             changed = True
         else:
-            entry["exhausted"] = True
-            changed = True
-            exhausted.append("%s (重试预算耗尽 retries=%d > max_retries=%d)"
-                             % (tid, entry.get("retries", 0), node["max_retries"]))
+            if not entry.get("exhausted"):
+                entry["exhausted"] = True
+                changed = True
+            if node["on_exhaust"] == "exit":
+                exhausted_exit.append("%s (重试预算耗尽 retries=%d > max_retries=%d)"
+                                      % (tid, entry.get("retries", 0), node["max_retries"]))
     if changed:
         try:
             tmp = status_path + ".tmp"  # 原子写：写半截崩溃不损坏旧文件
@@ -282,8 +334,8 @@ def main():
             os.replace(tmp, status_path)
         except OSError as e:
             return fail("status.json 写回失败: %s" % e)
-    if exhausted:
-        print(json.dumps({"result": "[STUCK]", "reason": "; ".join(exhausted)}, ensure_ascii=False))
+    if exhausted_exit:
+        print(json.dumps({"result": "[STUCK]", "reason": "; ".join(exhausted_exit)}, ensure_ascii=False))
         return 1
 
     # 扁平候选流（yaml 顺序）：subgraph → 其子任务（子 yaml 顺序，依赖映射为 父/子 id）
@@ -296,6 +348,9 @@ def main():
         else:
             stream.append((node, node["id"], node["depends_on"]))
 
+    # 跳过任务集合：以下所有 eff() 调用显式传入
+    skipped_tasks = compute_skipped_tasks(stream, tasks, node_by_id, sub_ids)
+
     limit = config["max_parallel"] - sum(
         1 for t in tasks.values() if t.get("status") in IN_FLIGHT)
     batch = []
@@ -305,7 +360,7 @@ def main():
         st = tasks[tid]["status"]
         if st == "executed":
             phase = "verify"  # 验证不受依赖回归影响
-        elif st == "pending" and all(eff(d) == "pass" for d in deps):
+        elif st == "pending" and all(eff(d, skipped_tasks) == "pass" for d in deps):
             phase = "execute"
         else:
             continue
@@ -318,19 +373,24 @@ def main():
     if batch:
         print(json.dumps(batch, ensure_ascii=False, indent=2))
         return 0
-    effs = {tid: eff(tid) for tid in node_by_id}
-    if all(s in SETTLED for s in effs.values()):
-        print(json.dumps({"result": "[ALL TASK FINISHED]"}, ensure_ascii=False))
+    effs = {tid: eff(tid, skipped_tasks) for tid in node_by_id}
+    if all(s in SETTLED or s == "skipped" for s in effs.values()):
+        result = {"result": "[ALL TASK FINISHED]"}
+        if skipped_tasks:
+            result["skipped"] = sorted(skipped_tasks)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     if any(s in IN_FLIGHT for s in effs.values()):
         print("[]")
         return 0
     reasons = []
     for tid, node in node_by_id.items():
+        if effs[tid] == "skipped":
+            continue
         if effs[tid] == "fail":
             reasons.append("%s (fail 未决)" % tid)
         elif effs[tid] == "pending":
-            unmet = [d for d in node["depends_on"] if eff(d) != "pass"]
+            unmet = [d for d in node["depends_on"] if eff(d, skipped_tasks) != "pass"]
             if unmet:
                 reasons.append("%s (依赖未满足: %s)" % (tid, ", ".join(unmet)))
     print(json.dumps({"result": "[STUCK]", "reason": "; ".join(reasons)}, ensure_ascii=False))
