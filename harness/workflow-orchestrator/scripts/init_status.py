@@ -23,9 +23,11 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yaml
+
+# G.PSL.02：now() 须显式传 tz；统一用 now(timezone.utc).astimezone() 按系统默认时区记录
 
 
 def main():
@@ -74,7 +76,7 @@ def main():
         f.write(args.prompt + "\n")
     with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps({
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
             "event": "init",
             "workflow": config.get("workflow", ""),
             "tasks": len(task_ids),

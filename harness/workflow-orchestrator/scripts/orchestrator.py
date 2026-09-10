@@ -51,11 +51,12 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yaml
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+# G.PSL.02：now() 须显式传 tz；统一用 now(timezone.utc).astimezone() 按系统默认时区记录
 CRASH = "$CRASH"
 SLEEP_PREFIX = "$SLEEP:"
 MAX_EMPTY_ROUNDS = 3
@@ -174,7 +175,7 @@ def err(msg):
 
 
 def log_event(work_dir, **kv):
-    kv = dict(kv, timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    kv = dict(kv, timestamp=datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"))
     with open(os.path.join(work_dir, ".workflow", "log.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(kv, ensure_ascii=False) + "\n")
 
@@ -247,8 +248,10 @@ def reset_transient(work_dir):
 def session_path(work_dir, task_id, phase):
     """会话存档路径；进程启动前创建，stdout 流式写入，监控可实时读到。"""
     d = os.path.join(work_dir, ".workflow", "sessions")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "%s.%s.%s.jsonl" % (task_id, phase, datetime.now().strftime("%Y%m%dT%H%M%S")))
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y%m%dT%H%M%S")
+    path = os.path.join(d, "%s.%s.%s.jsonl" % (task_id, phase, ts))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
 
 
 def dry_reply(dry_map, task_id, phase):
