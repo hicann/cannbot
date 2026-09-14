@@ -12,7 +12,7 @@
 python3 get_task.py <work_dir>          （唯一输入）
 
 按 $WORK_DIR/.workflow/status.json 的 workflow 字段定位 yaml，对照契约全量校验
-（顶层恰好 workflow/max_parallel/nodes；normal 12 键 / subgraph 4 键，恰好无多余；
+（顶层恰好 workflow/max_parallel/nodes；normal 12 个必填键和可选 procedure / subgraph 4 键，不允许其他键；
 depends_on 引用存在且无环），物化子图，再选取派发批次：
 
 - pending（依赖全 pass）→ agent=executor（execute 阶段）
@@ -47,6 +47,7 @@ TOP_KEYS = ("workflow", "max_parallel", "nodes")
 TASK_TYPES = ("normal", "subgraph")
 NORMAL_KEYS = ("id", "task_type", "title", "goal", "approach", "acceptance",
                "out_of_scope", "depends_on", "executor", "verifier", "max_retries", "on_exhaust")
+NORMAL_OPTIONAL_KEYS = ("procedure",)
 SUBGRAPH_KEYS = ("id", "task_type", "file", "depends_on")
 STR_KEYS = ("id", "title", "executor", "verifier")  # 非空 str
 LIST_KEYS = ("goal", "approach", "acceptance", "out_of_scope")  # 非空 list[非空 str]
@@ -84,14 +85,15 @@ def validate_node_set(nodes, allow_subgraph):
             return "%s 子图内只允许 normal 节点（不支持嵌套 subgraph）" % where
         keys = NORMAL_KEYS if tt == "normal" else SUBGRAPH_KEYS
         missing = set(keys) - set(node)
-        extra = set(node) - set(keys)
+        optional = NORMAL_OPTIONAL_KEYS if tt == "normal" else ()
+        extra = set(node) - set(keys) - set(optional)
         if missing or extra:
             return "%s(%s) 键不符: 缺 %s 多 %s" % (where, tt, sorted(missing), sorted(extra))
         for k in ("id", "file") if tt == "subgraph" else STR_KEYS:
             if not is_str(node[k]):
                 return "%s.%s 必须是非空 str" % (where, k)
         if tt == "normal":
-            for k in LIST_KEYS:
+            for k in LIST_KEYS + tuple(k for k in NORMAL_OPTIONAL_KEYS if k in node):
                 v = node[k]
                 if not isinstance(v, list) or not v or not all(is_str(s) for s in v):
                     return "%s.%s 必须是非空 list[非空 str]" % (where, k)
@@ -203,13 +205,18 @@ def compute_skipped_tasks(stream, tasks, node_by_id, sub_ids):
 
 
 def build_prompt(node, phase, work_dir, user_prompt):
-    """execute 阶段含 Approach 与 executed 协议句；verify 阶段无 Approach，要求 pass/fail。"""
+    """两阶段均包含 Goal、Acceptance 和 Out-of-Scope。
+
+    execute 包含 Approach，要求回复 executed；verify 在填写 procedure 时包含 Procedure，要求回复 pass/fail。
+    """
     def block(name, items):
         return "%s:\n%s" % (name, "\n".join("- " + s for s in items))
     parts = ["$WORK_DIR=%s" % work_dir, "$USER_PROMPT=%s" % user_prompt,
              "[%s] %s" % (node["id"], node["title"]), block("Goal", node["goal"])]
     if phase == "execute":
         parts.append(block("Approach", node["approach"]))
+    elif phase == "verify" and "procedure" in node:
+        parts.append(block("Procedure", node["procedure"]))
     parts += [block("Acceptance", node["acceptance"]), block("Out-of-Scope", node["out_of_scope"])]
     parts.append("After finishing, reply with only: executed" if phase == "execute"
                  else "After verifying, reply with only: pass or fail")

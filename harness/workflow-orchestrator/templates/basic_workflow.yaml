@@ -1,5 +1,5 @@
-# Workflow definition template. Every key is mandatory and explicit — the
-# orchestrator applies no defaults, so a missing key is a validation error.
+# Workflow definition template. Normal nodes may omit procedure; all other
+# declared keys are mandatory. Unknown keys are rejected.
 
 workflow: basic-demo                    # str. Name; recorded in the .workflow/log.jsonl init event.
 
@@ -15,7 +15,10 @@ nodes:                                  # Task nodes. depends_on edges drive exe
     approach:                           # list[str], non-empty. Suggested path. Execute prompt only.
       - Check dependency tool versions
       - Record missing tools in env.list
-    acceptance:                         # list[str], non-empty. Verify-phase verdict criteria; may be shell checks.
+    # Optional non-empty list[str]. When present, always included in the verify prompt; absent means no Procedure block.
+    procedure:
+      - Read env.list and independently check each listed tool with which
+    acceptance:                         # list[str], non-empty. Verdict criteria sent to both execute and verify.
       - test -f env.list
       - every tool listed in env.list resolves via which
     out_of_scope:                       # list[str], non-empty. Explicitly excluded work.
