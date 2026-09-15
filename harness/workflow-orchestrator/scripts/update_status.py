@@ -14,8 +14,7 @@ python3 update_status.py <task_id> <work_dir> <agent_reply>   （agent_reply = a
 读 $WORK_DIR/.workflow/status.json，打印任务当前状态并按回复分类迁移：
 
 回复分类（pass/fail/executed/crash/others）：先判整条 strip 后恰为 "$CRASH"
-（orchestrator 对崩溃的 agent 进程注入的令牌）→ crash；否则取最后一条非空行，
-忽略大小写与结尾标点后须恰好等于关键词——协议要求整条回复只有关键词，宽松
+（orchestrator 对崩溃的 agent 进程注入的令牌）→ crash；否则从最后一条非空行开始向前查找，忽略大小写与结尾标点后须恰好等于关键词——协议要求整条回复只有关键词，宽松
 包含匹配会把 "the fix did not pass" 误判成 pass，宁误判 others（可重试）不误判 pass。
 
 状态机：
@@ -23,7 +22,7 @@ python3 update_status.py <task_id> <work_dir> <agent_reply>   （agent_reply = a
 - executed  + 任意回复   → verifying
 - running   + crash      → fail 且 retries+1（崩溃 = 一次失败，宽松规则的例外）
 - running   + 其他回复   → executed（不校验回复关键词，由 verifier 把关）
-- verifying + pass       → pass
+- verifying + pass       → pass（seq+1 记 pass_seq；清 advice 标记）
 - verifying + fail       → fail 且 retries+1（是否重试由调度方按 max_retries/on_exhaust 决定）
 - verifying + crash      → fail 且 retries+1（同 verifying + fail）
 - verifying + 其他       → verifying（不动，不写回）
@@ -78,6 +77,18 @@ def transition(cur, cls):
     return None
 
 
+def _write_status_and_log(wf_dir, status_path, status, event):
+    """原子写回 status.json 并追加一条 log.jsonl 事件；失败抛 OSError。"""
+    tmp = status_path + ".tmp"  # 原子写：写半截崩溃不损坏旧文件
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, status_path)
+    event["timestamp"] = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Update task status from agent reply")
     parser.add_argument("task_id", help="task id in status.json")
@@ -113,22 +124,15 @@ def main():
     entry["status"] = new
     if retry:
         entry["retries"] = int(entry.get("retries", 0)) + 1
+    if new == "pass":
+        status["seq"] = int(status.get("seq", 0)) + 1
+        entry["pass_seq"] = status["seq"]
+        entry.pop("advice", None)  # 回滚重做的任务 pass 后清除 advice 标记
     try:
-        tmp = status_path + ".tmp"  # 原子写：写半截崩溃不损坏旧文件
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(status, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, status_path)
-        with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-                "event": "update",
-                "task_id": args.task_id,
-                "reply": cls,
-                "from": cur,
-                "to": new,
-                "retries": entry.get("retries", 0),
-            }, ensure_ascii=False) + "\n")
+        _write_status_and_log(wf_dir, status_path, status, {
+            "event": "update", "task_id": args.task_id, "reply": cls,
+            "from": cur, "to": new, "retries": entry.get("retries", 0),
+        })
     except OSError as e:
         return fail("status.json/log.jsonl 写回失败: %s" % e)
     return 0

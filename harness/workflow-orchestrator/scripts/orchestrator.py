@@ -20,13 +20,14 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
 主循环（事件驱动补位）：
 - 常驻唯一 ThreadPoolExecutor（容量 = workflow yaml 的 max_parallel，启动时读取）。
   主线程独占调度与 status.json 写入：收割已完成 → 调 get_task.py 要新批次 → 串行预占
-  （pending→running / executed→verifying，回复传空串）→ submit → wait(FIRST_COMPLETED)。
+  （pending→running / executed→verifying，回复传空串）→ submit →
+  wait(FIRST_COMPLETED)。
   任一任务完成即收割即补位，无批内 barrier：快任务验证 pass 后，只依赖它的下游立即
   拉起，不等同批慢任务。原始 stdout 存档到 .workflow/sessions/<task_id>.<phase>.<时间戳>.jsonl。
 - 崩溃 = 一次失败：agent 进程退出码非零 → log crash 事件 → update_status 传 $CRASH
   （落 fail、retries+1、吃重试预算）→ 照常调度。预算内 get_task 下一轮自动重排重试
   （本次运行内自愈）；耗尽后由 on_exhaust 裁决（exit → [STUCK]；continue → 跳过
-  该节点及其全部下游依赖）。
+  该节点及其全部下游依赖；rollback → 排干在飞后回滚到 rollback_to 重做）。
   拉起级失败（provider 二进制缺失等 Popen OSError）→ 主循环异常 exit 2，
   任务留瞬态，重跑恢复，不吃预算。
 - 排干守卫：终结信号（[ALL TASK FINISHED]/[STUCK]）到达时仍有在飞任务 → 停止派发，
@@ -46,6 +47,7 @@ import argparse
 import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -254,6 +256,32 @@ def session_path(work_dir, task_id, phase):
     return path
 
 
+WORKFLOW_DIR_NAME = ".workflow"  # 快照/恢复都要跳过的账本目录
+CP = shutil.which("cp") or "cp"  # 绝对路径（G.EDV.05）；--reflink=auto 依赖 GNU cp
+
+
+def copy_tree(src, dst):
+    """把 src 下除 .workflow 外的顶层条目逐一 cp 到 dst（reflink=auto：CoW 零拷贝，不支持则退化）。"""
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        if name == WORKFLOW_DIR_NAME:
+            continue
+        subprocess.run([CP, "-a", "--reflink=auto",
+                        os.path.join(src, name), dst + "/"], check=True)
+
+
+def clear_tree(path):
+    """删除 path 下除 .workflow 外的全部顶层条目（回滚恢复 checkpoint 前清空现场）。"""
+    for name in os.listdir(path):
+        if name == WORKFLOW_DIR_NAME:
+            continue
+        p = os.path.join(path, name)
+        if os.path.islink(p) or os.path.isfile(p):
+            os.unlink(p)
+        else:
+            shutil.rmtree(p)
+
+
 def dry_reply(dry_map, task_id, phase):
     seq = dry_map.get(task_id)
     default = "pass" if phase == "verify" else "executed"
@@ -286,6 +314,12 @@ def run_agent(entry, provider, work_dir, dry_map):
     """worker 线程体：执行一个派发条目，返回 (reply, crashed)；不碰 status.json。"""
     if dry_map is not None:
         reply = dry_reply(dry_map, entry["task_id"], entry["_phase"])
+        if entry["_phase"] == "advice" and reply != CRASH:
+            os.makedirs(os.path.dirname(entry["advice"]), exist_ok=True)
+            with open(entry["advice"], "w", encoding="utf-8") as f:
+                f.write("# Rollback Advice (SIMULATED / dry-run)\n\n"
+                        "此文档由 dry-run 模拟生成，未执行真实失败分析。\n")
+            reply = "advice-written"
         return reply, reply == CRASH
     path = session_path(work_dir, entry["task_id"], entry["_phase"])
     with open(path, "wb") as f, subprocess.Popen(
@@ -301,6 +335,28 @@ def run_agent(entry, provider, work_dir, dry_map):
         return provider.parse_reply(f.read()), False
 
 
+def finish_advice(work_dir, entry, crashed=False, error=None):
+    """记录 advice 执行失败；成功产物由下一轮 get_task 消费。"""
+    status = load_status(work_dir)
+    pending = status.get("advice_pending")
+    if not pending or pending.get("task_id") != entry["task_id"]:
+        raise ValueError("advice pending 与完成任务不一致: %s" % entry["task_id"])
+    if crashed:
+        error = error or "agent 进程崩溃"
+    if not error:
+        try:
+            with open(pending["advice"], encoding="utf-8") as f:
+                if not f.read().strip():
+                    error = "advice 文件为空: %s" % pending["advice"]
+        except (OSError, UnicodeError) as e:
+            error = "advice 文件缺失或不可读: %s" % e
+    if error:
+        pending["error"] = error
+        save_status(work_dir, status)
+    log_event(work_dir, event="advice", task_id=entry["task_id"],
+              result="error" if error else "ready", error=error)
+
+
 def harvest_done(work_dir, inflight):
     """收割已完成的 future（主线程串行调用，status.json 唯一写入路径）。
 
@@ -309,6 +365,14 @@ def harvest_done(work_dir, inflight):
     """
     for future in [x for x in inflight if x.done()]:
         entry = inflight.pop(future)
+        if entry.get("_phase", entry.get("phase")) == "advice":
+            try:
+                _, crashed = future.result()
+            except Exception as e:
+                finish_advice(work_dir, entry, crashed=True, error=str(e))
+            else:
+                finish_advice(work_dir, entry, crashed=crashed)
+            continue
         reply, crashed = future.result()
         if crashed:
             log_event(work_dir, event="crash", task_id=entry["task_id"])
@@ -366,7 +430,7 @@ def ask_get_task(work_dir):
     try:
         out = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return None, err("get_task 输出无法解析: %r" % proc.stdout)
+        return None, err("get_task 输出无法解析: %r stderr=%r" % (proc.stdout, proc.stderr))
     if not (isinstance(out, list)
             or (isinstance(out, dict) and out.get("result") in TERMINAL_RESULTS)):
         return None, err("get_task 输出无法解析: %r" % proc.stdout)
@@ -375,13 +439,29 @@ def ask_get_task(work_dir):
 
 def dispatch_batch(ctx, batch):
     """预占任务状态并提交一批任务（主线程串行）；成功返回 None，否则返回退出码。"""
+    # Advice remains pending in the ledger until its file is consumed. Repeated
+    # dispatcher polls must not submit a second worker for that stable id.
+    seen = {entry["task_id"] for entry in ctx.inflight.values()}
+    unique_batch = []
+    for entry in batch:
+        if entry["task_id"] not in seen:
+            unique_batch.append(entry)
+            seen.add(entry["task_id"])
+    batch = unique_batch
     status = load_status(ctx.work_dir)
     for entry in batch:
+        if entry.get("phase") == "advice":
+            entry["_phase"] = "advice"
+            continue
+        t = status["tasks"][entry["task_id"]]
         # 记阶段供 dry-run 默认回复与 session 存档：pending→execute、executed→verify
         entry["_phase"] = (
             "verify"
-            if status["tasks"][entry["task_id"]]["status"] == "executed"
+            if t["status"] == "executed"
             else "execute")
+    for entry in batch:
+        if entry["_phase"] == "advice":
+            continue
         if update(ctx.work_dir, entry["task_id"], "").returncode != 0:
             return err("任务状态预占失败: %s" % entry["task_id"])
     for entry in batch:
@@ -482,6 +562,9 @@ def main():
         ]).returncode
         if rc != 0:
             return rc
+        initial = load_status(args.work_dir)
+        initial["provider"] = args.provider or "dry"
+        save_status(args.work_dir, initial)
 
     dry_map = None
     if args.dry_run:
@@ -493,7 +576,8 @@ def main():
             dry_map = {}
     try:
         return loop(args.work_dir, PROVIDERS.get(args.provider), dry_map)
-    except (OSError, KeyError, ValueError) as e:  # JSONDecodeError ⊂ ValueError，不重复捕获
+    except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as e:
+        # JSONDecodeError ⊂ ValueError，不重复捕获；CalledProcessError = copy_tree 的 cp 失败
         return err("主循环异常: %s" % e)
 
 

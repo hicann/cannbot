@@ -12,7 +12,7 @@
 python3 init_status.py --yaml <workflow.yaml> --work-dir <work directory> --prompt <prompt>
 
 在 $WORK_DIR/.workflow/ 下创建：
-- status.json    任务状态表（契约：workflow/work_dir/user_prompt/tasks；
+- status.json    任务状态表（契约：workflow/work_dir/user_prompt/seq/rollbacks_used/tasks；
                   只记 normal 任务 id，subgraph 容器不注册——分组不是任务，
                   状态由调度脚本从子任务实时聚合；任务定义由调度脚本从 yaml 读取；
                   user_prompt 指向 user_prompt.md 的绝对路径）
@@ -28,6 +28,33 @@ from datetime import datetime, timezone
 import yaml
 
 # G.PSL.02：now() 须显式传 tz；统一用 now(timezone.utc).astimezone() 按系统默认时区记录
+
+
+def _persist_initial_status(wf_dir, status_path, args, config, task_ids):
+    """构建并落盘初始状态：status.json + user_prompt.md + log.jsonl（首条 init 事件）。"""
+    os.makedirs(wf_dir, exist_ok=True)
+    status = {
+        "workflow": os.path.abspath(args.yaml),
+        "work_dir": os.path.abspath(args.work_dir),
+        "user_prompt": os.path.abspath(os.path.join(wf_dir, "user_prompt.md")),
+        "seq": 0,
+        "rollbacks_used": 0,
+        "tasks": {tid: {"status": "pending", "retries": 0} for tid in task_ids},
+    }
+    tmp = status_path + ".tmp"  # 原子写：写半截崩溃不会留下半截 status.json
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, status_path)
+    with open(os.path.join(wf_dir, "user_prompt.md"), "w", encoding="utf-8") as f:
+        f.write(args.prompt + "\n")
+    with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+            "event": "init",
+            "workflow": config.get("workflow", ""),
+            "tasks": len(task_ids),
+        }, ensure_ascii=False) + "\n")
 
 
 def main():
@@ -60,27 +87,7 @@ def main():
         print("[init_status] 错误: workflow yaml 中没有任务节点(nodes 为空)", file=sys.stderr)
         return 1
 
-    os.makedirs(wf_dir, exist_ok=True)
-    status = {
-        "workflow": os.path.abspath(args.yaml),
-        "work_dir": os.path.abspath(args.work_dir),
-        "user_prompt": os.path.abspath(os.path.join(wf_dir, "user_prompt.md")),
-        "tasks": {tid: {"status": "pending", "retries": 0} for tid in task_ids},
-    }
-    tmp = status_path + ".tmp"  # 原子写：写半截崩溃不会留下半截 status.json
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(status, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, status_path)
-    with open(os.path.join(wf_dir, "user_prompt.md"), "w", encoding="utf-8") as f:
-        f.write(args.prompt + "\n")
-    with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-            "event": "init",
-            "workflow": config.get("workflow", ""),
-            "tasks": len(task_ids),
-        }, ensure_ascii=False) + "\n")
+    _persist_initial_status(wf_dir, status_path, args, config, task_ids)
 
     print("[init_status] 已初始化 %d 个任务 → %s" % (len(task_ids), status_path))
     return 0
