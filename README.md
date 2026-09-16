@@ -4,7 +4,11 @@
 
 ## 🚀 概述
 
-CANNBot 面向 CANN 与昇腾 NPU 开发场景，提供可组合的 Agent 插件、专业角色和工程工作流，支持算子开发、算子测试、模型迁移与推理优化。
+CANNBot 是 [CANN](https://hiascend.com/software/cann) 社区的 Infra 智能体层，用 Agent 完成 AscendC/PyPTO/TileLang/Triton 等各类语言的算子开发、模型迁移与推理优化，并延伸至图模式、Runtime 等更多 CANN 开发场景。
+
+本仓（cannbot）是其应用仓与用户入口，提供工作流编排与场景插件；仓群还包括 [cannbot-skills](https://gitcode.com/cann/cannbot-skills)、[cannbot-knowledge](https://gitcode.com/cann/cannbot-knowledge)、[cannbot-dsl](https://gitcode.com/cann/cannbot-dsl)、[cann-bench](https://gitcode.com/cann/cann-bench)、[cannbot-sentry](https://gitcode.com/cann/cannbot-sentry) 等仓库，结构如下。
+
+![CANNBot 仓群结构](docs/figures/cannbot-repo-map.png)
 
 ## ⚡ 快速开始
 
@@ -41,6 +45,5 @@ bash init.sh
 
 ## 💬 相关信息
 
-- [CANNBot Skills](https://gitcode.com/cann/cannbot-skills)
 - [问题反馈](https://gitcode.com/cann/cannbot/issues)
 - [许可证](LICENSE)
