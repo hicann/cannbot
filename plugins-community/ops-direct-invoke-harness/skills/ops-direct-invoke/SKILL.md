@@ -1,0 +1,225 @@
+---
+name: ops-direct-invoke
+description: 根据已确认的需求清单选择直调算子工作流模板，组装 workflow YAML 并通过脚本启动 harness 执行。
+---
+
+# 直调算子开发
+
+本 Skill 根据模板注册文件选择引用模板，将 tasks 展开为完整 workflow YAML 后启动执行。每个 `tasks/<步骤名>.yaml` 只收录节点的 9 个必填任务字段、可选 procedure 与 variables 声明（当前均提供），不包含 id、depends_on 或 max_retries。模板提供节点引用、依赖与下发时确定的重试次数；task 决定具体执行和验收内容。组装完成后，调度交给 harness。
+
+## 启动前置条件
+
+本 Skill 接收调用方已对齐的需求清单 `work_dir/需求分析.md` 和 PM 从仓库级缓存复制的只读环境记录 `work_dir/环境信息.md`。启动前确认内容完整、无待决阻断项，且用户答复覆盖当前版本；已有有效清单与确认可直接复用。仓库级环境结果固定为 `<目标仓>/.cannbot/环境信息.md`，存在通过记录时直接复用，不因新算子重复校验；首次检查与缓存规则由调用方执行。
+
+需求分析与环境检查不属于 tasks。存在未答问卷或缺失信息时，将缺项报告给调用方，不组装或启动工作流，不用 silent 或默认选项代替用户拍板。
+
+## 运行输入
+
+沿用用户已经提供的目标代码仓绝对路径、算子名、原始需求、目标芯片、相关资料路径、已明确的架构选择与确认记录。把这些业务信息和已确认需求清单、环境检查记录的绝对路径、版本及确认摘要组织成传给 harness 的原始任务 prompt，不增加运行时私有输入文件或环境变量。任务提示中引用文件时使用绝对路径。
+
+确认 provider、work_dir 和所选 workflow 模板的绝对路径。缺少启动所需信息时先向用户询问。work_dir 必须设为目标仓下 `.cannbot/<任务名>/workflow<序号>/` 的绝对路径，目录由调用方按任务与执行轮次分配。除仓库级环境缓存与首次检查日志外，所有本轮开发中间产物（需求、设计、报告、日志、临时探针、构建临时文件和框架状态）必须放在此目录下；代码、测试和使用文档等算子交付件写入目标代码仓约定目录。使用独立工作目录及 checkout 隔离不同任务，避免覆盖已有运行。
+
+工作流启动后不与 PM 或用户交互。各节点只使用已确认输入、固定 Skill 和本阶段下发清单，不发问卷、不等待答复，也不修改本轮 YAML。必要输入、确认或能力缺失时，executor 停止受阻操作，将证据写入本阶段报告并按 harness 原生执行协议结束；verifier 无法确认交付标准满足时判定失败，由 harness 按既定预算和耗尽策略处理。记录阻塞不代表交付通过。
+
+PM 仅在启动前确定输入与清单、整轮退出后读取结果并处理补充确认或下一轮编排。运行中可以只读观察日志、向用户汇报进度，不向节点补发指令。
+
+## 先查注册文件，再选择调度模板
+
+**每次启动前先读取 [templates/workflows/registry.csv](templates/workflows/registry.csv)，确认当前有哪些工作流模板，按已确认的需求核对 use_when 中的建议使用场景，再选择其中一个。** 不凭记忆假定模板存在，也不直接把 tasks 目录的文件全部拼起来。选择后向用户说明模板名称及匹配理由；用户已授权开发且条件明确时无需额外审批。
+
+注册文件采用 CSV，仅包含 file（模板文件）与 use_when（建议使用场景）两列。节点图只在 file 指向的引用模板内维护，不在注册文件重复。file 相对 templates/workflows/；模板中的节点 yaml 路径相对该模板文件。
+
+当前注册 [basic](templates/workflows/basic.yaml)（正式开发）和 [feasibility](templates/workflows/feasibility.yaml)（独立技术穿刺）。PM 在需求确认与环境核对后，按证据选择：
+
+- 路线已有适用实现或有效设备证据、无关键技术疑点：启动 basic。
+- API 组合、目标芯片适配或关键端到端链路尚无运行证据：先独立启动 feasibility，不同时展开完整黑盒矩阵与测试工程。判断依据是技术缺口，不是算子名字或复杂程度标签。
+- 已知 Skill 规则冲突、必要权限或平台能力缺失：启动前先处理。不能靠穿刺绕过规则，也不能把资料调查通过当作路线验证通过。
+
+PM 用 feasibility 的 `spike_scope` 明确候选路线、关键疑点和代表用例范围，`task_requirements` 指定可复用资产及授权路径，分别绑定执行/验收 Skill。默认穿刺验证完整关键组合；例如 GQA 须覆盖 QK→Softmax→PV 的组合与同步，不以各 API 分别存在替代。范围可缩小，用户确认的接口、架构、精度和单 Kernel 等约束不降低。
+
+穿刺验收通过后，PM 新建下一轮目录，复制有效需求和环境输入；在 basic 相关节点的 `task_requirements` 中填入前轮代码、测试入口、证据的绝对路径、版本和适用范围，保留前轮原始证据。测试工程复用入口并扩展覆盖，算子开发复用有效实现；本轮仍完成正式全量验收。已有知识文档通过 `knowledge_documents` 传入，可省略重复搜集。穿刺失败时不启动完整开发；根据原因处理规则/环境阻塞或调整已授权候选，新一轮仍需真实穿刺证据。
+
+PM 在下发前确定各节点的 max_retries，模板默认允许 3 次重试（首次执行加重试，最多 4 轮）；需要调整时在本轮引用图中修改，不改 task。仓内无已有算子文档时，从本轮引用图移除最后的文档准备节点，保留其他节点及验收；不新增模板或凭空创建文档。PM 编排时检查目标仓当前文档，不将历史环境缓存中的文档现状当成永久事实。
+
+basic 默认知识搜集与黑盒测试设计并行；两者通过后依次进行测试工程开发、算子开发、白盒测试设计、代码修复、文档准备。代码修复是 basic 的默认节点，没有待修复缺陷且已有当前版本的有效全量证据时，核对并复用，记录无需修改；证据不满足条件时补齐验证。每个节点已包含执行与验收，不另设 CP。
+
+知识搜集是可选步骤。PM 可移除本轮图中的知识搜集节点及依赖边，将黑盒测试设计改为 `0`，测试工程依赖 `0`，后续仍为 `1`～`5`。算子开发通过 `knowledge_documents` 接收中立补充文档的路径；可以引用前轮产物，也可以为“无补充文档。”，不再要求同图知识搜集上游。basic 的默认值指向 `$WORK_DIR/0.0-知识搜集.md`；删去节点或改变编号时，PM 同步清空或更新该变量。
+
+知识搜集产物是可溯源的资料与初版实现草稿，开发可根据验证调整 API、Tiling 和分支处理，不要求照搬草稿；已确认需求仍是约束。测试工程先准备黑盒用例，算子开发由 executor 构建并执行全量黑盒，verifier 核对证据和检视代码。白盒在实现后依据源码生成可执行用例并接入已有框架。
+
+白盒节点验收的是用例质量、框架接入及真实证据；正确用例暴露的算子缺陷记录后交下游修复，不能将该节点通过表述为算子功能通过。测试或框架自身问题仍会阻断。代码修复验收要求最终全量黑盒、白盒回归与代码检视通过，之后才能进入文档交付。
+
+若没有适用模板，说明具体差异，不擅自套用模板或删除验收。在用户已授权范围内，按本轮交付缺口选择任务、明确依赖与预算，在当前 work_dir 组装并验证一次性 YAML。只有要发布为可复用模板时，才更新 tasks、模板及注册文件；运行期不修改已安装的共享资源。
+
+## 维护工作流模板
+
+引用具体 Skill 时，只写“必须加载 `<skill-name>` Skill，按其中的要求执行”，不复制其内部步骤、规则或知识。固定必需项写在 task；PM 选定与芯片、架构及已知问题匹配的专项必需项，分别绑定 `executor_skills`、`verifier_skills`。设计和文档任务以明确加载为主；算子开发、代码修复可在同一变量中接收有限候选清单及可观察的触发条件，按实际证据选择，task 不重复维护具体场景路由。节点输入、交付件和验收标准仍由 task 声明。引用文档模板只是读取资源。
+
+知识搜集可以记录有依据的 Skill 建议及适用节点、执行/验收阶段，供 PM 在整轮退出后编排下一轮时参考；本轮下游仍使用启动前绑定的清单，不从报告自动加载新增 Skill。资料不足时可先独立组织知识搜集；该节点只交付中立参考。关键路线需要实测时选择 feasibility，不能连续用资料调查替代编译和设备验证。节点可在已下发候选内按证据选择；清单外能力仅有帮助时记为建议，缺少它导致交付标准无法满足时记录阻塞并验收失败。
+
+**task 编写原则：具体流程步骤集中在 approach（执行）和 procedure（验收）；acceptance 只写简短的结果标准，明确交付件，不放资料读取、操作顺序、检查方法或异常处理。涉及文件交付件时，acceptance 先列 `test -s` 非空检查，再列内容与质量结果。** 固定报告使用明确的 `$WORK_DIR/<产出节点ID>-<文件名>`；源码、测试和使用文档沿用已确认的项目布局，其检查命令所需小写 shell 变量在 approach/procedure 中用实际绝对路径赋值，不新增 harness 输入字段。多文件交付逐文件检查，不能用目录或任意非空文件代替。共享 acceptance 只列执行者交付件与质量结果；验收报告不放入 executor 的交付清单。所有节点的 procedure 明确由 verifier 写入 `$WORK_DIR/<id>-验收报告.md` 后执行 `test -s`，通过、失败及阻塞均落盘。executor 不生成或等待验收报告，只在重试开始时读取已有报告的修改意见。
+
+引用模板格式如下；goal、approach、procedure、acceptance、角色及其它任务内容都从 task YAML 读取，不能复制进模板：
+
+```yaml
+workflow: ops-direct-invoke
+max_parallel: 2
+nodes:
+- id: '0'
+  yaml: ../../tasks/知识搜集.yaml
+  depends_on: []
+  max_retries: 3
+  variables:
+    research_focus: 重点搜集目标芯片的 API 组合和小 shape 的 Tiling 依据。
+```
+
+- 节点提供 id、yaml、depends_on、max_retries，可选 variables；max_retries 必须是非负整数，由下发方明确决定，不从 task 获取或隐式补默认值。
+- id 和 depends_on 使用字符串。节点 id 按最长依赖路径分层，单节点层使用数字，同层并行节点使用数字.分支序号；按编号排序。组装器生成 ID 并核对其与模板声明一致，发现重复、未知依赖、环或编号不符时拒绝生成。
+- `scripts/assemble_workflow.py --template <引用模板路径> --output <本轮完整YAML路径>` 按模板文件的位置解析 task 路径，展开具体内容与报告编号。输出只包含 harness 标准字段，不包含 yaml 引用或 variables 声明。
+- PM 需修改预算、设置变量或省略文档节点时，将选中的引用图存为本轮 `workflow<序号>.template.yaml`，其中 task 路径转换为实际绝对路径，再调整本轮图并组装为 `workflow<序号>.yaml`。不修改已安装的共享模板或 task。
+- 脚本也接受按任意顺序提供的 task 文件位置，必须同时传 `--max-retries N` 为本次所有输入设置明确预算；不同节点预算和变量值用引用模板声明。默认顺序串行，`--depends-on N:M,K` 覆盖第 N 个输入的依赖，`N:` 表示无依赖，位置从 1 开始。重复 task 可出现在不同节点，产物编号分别展开。
+- task 的 procedure 若提供，必须为非空字符串列表。goal 写简短目标，approach 为执行步骤，procedure 为独立验收步骤，acceptance 为双方共享的结果标准。
+- 更新 task 后，无需手工同步模板正文；下次组装读取最新 task 内容。已经生成的运行 YAML 保持不变，避免改变正在执行或恢复中的流程。
+- 所有组装输出都使用新文件，拒绝覆盖。恢复使用原完整 YAML 和 work_dir；新一轮使用新目录，保留前轮状态与证据。
+
+## task 提示词变量
+
+每个 task YAML 顶部用 `variables` 声明变量；正文在需要填入提示词的固定位置写 `{{var:变量名}}`。变量在该节点内全局可见，不跨节点共享。相同 task 被引用多次时分别绑定。所有 task 提供以下三个变量；技术穿刺额外提供必填的 `spike_scope`，知识搜集提供 `research_focus`，算子开发提供可选的 `knowledge_documents`，代码修复提供必填的 `repair_requirements`。
+
+| 变量 | 注入位置 | 填写内容 |
+|---|---|---|
+| `task_requirements` | approach、procedure | 执行与验收共同遵守的本轮补充要求 |
+| `executor_skills` | 仅 approach | 执行阶段专项必需项；开发、修复可附有限候选与触发条件 |
+| `verifier_skills` | 仅 procedure | 验收阶段专项必需项；必要时附仅用于证据分析的候选与触发条件 |
+| `spike_scope` | 技术穿刺的 approach、procedure | 本轮候选路线、关键疑点及代表用例范围；引用模板提供默认范围，PM 下发前具体化 |
+| `knowledge_documents` | 算子开发的 approach | 中立补充知识文档路径；无资料时为“无补充文档。”，允许引用前轮文件 |
+
+补充 Skill 变量填写完整指令，例如“必须加载 `ascendc-simt-tiling-design` Skill，按其中的要求执行。”；多项可用多行文本。无补充项明确填写“无补充 Skill。”，也是 task 的默认值。专项必需项不留待节点重新决定；候选项必须逐项给出 Skill 名称和可观察的触发条件，不写“自行寻找合适 Skill”。命中才加载，未命中无需加载，多个独立条件有证据时可分别命中。加载项及选择依据写入当前阶段已有报告，无加载则记无；不新增报告文件或调度状态。不把阶段专用 Skill 放入双方共享的 `task_requirements`。
+
+PM 核对 task 固定项与补充必需项、候选均已安装、适用当前平台且符合角色权限，不重复下发固定 Skill。组合还须核对公开调用入口与产物契约：含完整开发流程的 Skill 不作为普通知识补充；只有明确支持资料查询入口时才限定使用该入口，否则按完整契约编排或报告阻塞。引用仍只写加载要求，不复制 Skill 内部步骤，不用本仓提示词豁免其规则。候选使用不扩大写入权限、不改变任务、验收标准、依赖或重试；verifier 只分析证据和判定，不修复对象、不重新构建或运行测试。必需能力超出清单、所需 Skill 不可用或能力不足时，按上述运行阻塞规则处理，不等待补发。
+
+basic 只在算子开发、代码修复的 `executor_skills` 中提供精度错误和卡死/崩溃的候选，默认不为 verifier 或其他节点添加决策树。PM 在本轮引用图中核对、增删候选；使用自定义变量会整体替换该节点的原值，需要保留的候选须一并写入。
+
+代码修复 task 的声明与正文示例（节选）：
+
+```yaml
+variables:
+  task_requirements: 无额外要求。
+  repair_requirements: null
+  executor_skills: 无补充 Skill。
+  verifier_skills: 无补充 Skill。
+approach:
+- '{{var:executor_skills}}'
+- '本轮修复要求：{{var:repair_requirements}}'
+procedure:
+- '{{var:verifier_skills}}'
+- '本轮修复要求：{{var:repair_requirements}}'
+```
+
+PM 在引用该 task 的 workflow 节点中赋值；例如单独组织一轮修复时：
+
+```yaml
+workflow: ops-direct-invoke
+max_parallel: 1
+nodes:
+- id: '0'
+  yaml: /absolute/skills/ops-direct-invoke/tasks/代码修复.yaml
+  depends_on: []
+  max_retries: 3
+  variables:
+    executor_skills: |
+      必需：必须加载 `ascendc-precision-debug` Skill，按其中的要求执行。
+      候选：复现出现卡死、超时或崩溃时，必须加载 `ascendc-crash-debug` Skill，按其中的要求执行。
+    verifier_skills: 无补充 Skill。
+    repair_requirements: |
+      修复 /absolute/repo/op_kernel/abs_kernel.cpp 的尾块结果错误。
+      复现证据：/absolute/repo/.cannbot/abs/workflow1/3-验收报告.md。
+      使用已有 ST 框架回归，不修改精度阈值。
+```
+
+- 变量名只允许字母、数字和下划线，首字符不能是数字。默认值为字符串时可以省略赋值；默认值为 null 时必须提供非空字符串。显式赋值仅接受字符串，多行内容使用 YAML `|`。
+- 只在 goal、approach、procedure、acceptance、out_of_scope 的文本项中替换。角色、依赖、预算等字段不使用变量；模板仍需显式声明调度信息。
+- 未声明引用、未知赋值、必填缺失、非文本值、重复 YAML 键、错误占位符或替换后空提示项都会拒绝组装，不输出部分 workflow。
+- 先展开 task 正文里的报告 ID，再一次性替换变量。变量值作为普通文本原样插入，不再解释其中的占位符、shell 表达式或 Python 代码；需引用前轮报告时由 PM 填写实际路径。
+- variables 只用于组装，展开后从完整 YAML 移除。harness 接收标准节点字段，无需改动框架。运行中的 YAML 保持冻结，后续变量调整只能用于新的组装输出。
+
+## 中间报告编号
+
+所有节点输出的中间报告按 `<产出节点ID>-<报告名>` 命名。同一节点的执行报告与验收报告使用同一 ID；引用上游报告时使用产出节点的 ID。文档模板源文件保持无编号，启动前的 `需求分析.md` 和 `环境信息.md` 作为运行输入沿用原名。
+
+子 task 不写死数字：自身报告路径使用 `$WORK_DIR/{{id}}-报告名.md`；上游报告路径使用 `$WORK_DIR/{{id:上游任务title}}-报告名.md`。组装脚本在分配节点 ID 后展开这些标记，所有说明和 `test -s` 引用同步替换。传给 harness 的 YAML 只含具体编号，不新增运行时变量或 harness 字段。
+
+知识补充文档通过 `knowledge_documents` 按路径输入，不使用上游 ID 占位符；其他必需上游引用按依赖关系解析，重跑同名上游任务时取依赖链中最新的一次；有多个并行同名产出者或缺少产出者时拒绝组装。局部或后续轮次引用外部报告时，在本轮 task 中明确填写已存在的实际路径。改变节点顺序或依赖后重新组装，不手工修改生成模板中的编号。
+
+例如基础模板输出 `0.0-知识搜集.md`、`0.1-黑盒测试设计.md`、`1-测试工程说明.md`、`2-实现记录.md`、`2-测试执行记录.md`、`3-白盒测试设计.md`、`3-测试执行记录.md`、`4-修复记录.md` 和 `4-测试执行记录.md`。全部节点另由 verifier 产出 `<id>-验收报告.md`；算子开发还产出 `2-代码检视报告.md`。
+
+## 报告与返工范围
+
+报告按当前阶段交付标准填写：知识搜集保留关键引用、建议与未知项；穿刺复用测试执行记录，提交最小代码和代表用例设备证据；正式开发保留全量测试证据与代码检视。报告只列关键结论、变更和证据路径，原始输出、用例明细与文件哈希清单单独保存，不在多份报告中重复全文。知识节点不要求所有检索文件的哈希或与关键结论无关的网络快照。
+
+每次真实构建或测试只维护一份带节点 ID 和执行轮次的证据清单，记录输入版本与原始结果索引；其格式与复用判据见测试执行记录模板。后续节点引用具体清单与结果，并记录差异核对，不抄录整份明细。代码修复节点始终执行，但满足复用条件时无需重复构建和测试，verifier 仍独立出具本节点报告。
+
+重试先读同节点验收报告，只修复未解决项。输入与产物版本未变且证据有效的内容可引用复用；源码、测试、golden、构建配置或环境变化导致执行证据失效时，按当前 task 重新验证，正式交付仍要求全量通过。verifier 复核当前版本与受影响项，追加结论并保留历史，不重新开展整轮资料搜集或构建测试。
+
+已知规则冲突等确定性阻塞条件未变时，执行者仅记录复核与条件缺口，验收者保持失败，不重复完整调查。当前公开接口只有 pass/fail，此约定不会跳过 harness 的重试；默认仍最多重试 3 次，耗尽后由 PM 处理，不新增失败类型或私有调度器。
+
+## 文档模板
+
+文档模板统一存放在本 Skill 的 templates/docs/，文件名只使用文档名称，不带步骤编号。执行和验收角色按 task 中给出的 `ops-direct-invoke/templates/docs/<文档名>.md` 定位已安装的资源并直接读取，不为使用模板重新执行入口或启动工作流。
+
+| 文档 | 模板 |
+|---|---|
+| 知识搜集 | [知识搜集](templates/docs/知识搜集.md) |
+| 黑盒测试设计 | [黑盒测试设计](templates/docs/黑盒测试设计.md) |
+| 白盒测试设计 | [白盒测试设计](templates/docs/白盒测试设计.md) |
+| 测试执行记录（executor） | [测试执行记录](templates/docs/测试执行记录.md) |
+| 验收报告（verifier，全部节点） | [验收报告](templates/docs/验收报告.md) |
+| 功能证据核对参考（verifier） | [功能验收报告](templates/docs/功能验收报告.md) |
+| 代码检视报告 | [代码检视报告](templates/docs/代码检视报告.md) |
+
+模板规定交付格式，验收标准在 task 的 acceptance 中。文档和报告按已组装 task 声明的带阶段 ID 的 $WORK_DIR 路径落盘，算子文档按仓内已有格式写入既定目录，无已有算子文档时不创建；需求清单由调用方维护。产物须与当前需求、实际代码和精度口径一致；知识草稿的假设、建议及后续实现调整须如实区分，问题及依据写入对应报告；超出当前任务范围的失效产物列明问题，不自行派发或批准继续。未开展的性能测量、回顾和经验总结不得填成已完成。
+
+## 交给 harness 执行
+
+先按注册场景完成路线判断，准备本轮需求、环境记录与任务 prompt，核对选中模板的 Skill 清单、范围、预算及节点。以下以 basic 启动为例；独立穿刺将模板改为 feasibility.yaml。需要调整 Skill 清单或节点图时，使用下方的本轮自定义引用图方式。脚本先在 work_dir 下生成与目录同名的完整 YAML，例如 `workflow1/workflow1.yaml`，再通过 harness 公开 CLI 执行：
+
+```bash
+python3 scripts/run_workflow.py \
+  --template basic.yaml \
+  --work-dir /absolute/operator-repo/.cannbot/abs/workflow1 --provider codex \
+  --harness-skill /absolute/installed-skills/workflow-orchestrator \
+  --prompt-file /absolute/operator-repo/.cannbot/abs/workflow1/original-task.txt
+```
+
+`--template` 相对本 Skill 的 templates/workflows/，与当前目录无关；只能指向该目录内的引用模板。引用模板通过组装脚本展开，harness 始终收到完整 YAML。模板不因启动而修改，输出文件已存在时拒绝覆盖，并提示使用 `--yaml` 恢复。
+
+使用本轮自定义引用图时先组装，再启动；恢复同一轮也使用 `--yaml` 指向已经生成的完整文件：
+
+```bash
+python3 scripts/assemble_workflow.py \
+  --template /absolute/operator-repo/.cannbot/abs/workflow1/workflow1.template.yaml \
+  --output /absolute/operator-repo/.cannbot/abs/workflow1/workflow1.yaml
+python3 scripts/run_workflow.py \
+  --yaml /absolute/operator-repo/.cannbot/abs/workflow1/workflow1.yaml \
+  --work-dir /absolute/operator-repo/.cannbot/abs/workflow1 --provider codex \
+  --harness-skill /absolute/installed-skills/workflow-orchestrator \
+  --prompt-file /absolute/operator-repo/.cannbot/abs/workflow1/original-task.txt
+```
+
+`--yaml` 与 `--template` 互斥且必选其一。`--yaml` 只接受完整 harness YAML，不展开引用或修改预算。脚本不自动选择模板、决定重试次数或判断文档是否需要；这些由 PM 在下发前确定。
+
+`--prompt-file` 的 UTF-8 内容原样作为 harness 的 `--prompt` 参数传递，也可直接使用 `--prompt '任务内容'`，二者互斥。首次运行必须提供原始任务；再次调用已有运行时可省略，由 harness 决定恢复行为。省略 prompt 不会清除耗尽状态。
+
+`--harness-skill` 默认取启动脚本调用路径所在安装 Skill 的同级 workflow-orchestrator 目录；直接从源码目录调用或布局不同时显式指定。脚本只调用该目录下公开的 orchestrator.py CLI，不读取或修改内部实现。
+
+默认使用 tmux 后台启动，返回会话名及 work_dir/orchestrator.log。启动成功不代表任务执行成功：用脚本打印的 tmux has-session 命令检查会话，结束后完整回传日志及其中的 exit status。同一 work_dir 使用固定会话名，已有活动会话时启动失败，不覆盖其运行。
+
+加 `--foreground` 可前台运行，直接输出 harness 日志并返回其退出码；加 `--dry-run` 透传原 harness 的模拟执行选项。启动脚本不自行重试或读写调度状态。
+
+每个普通节点先由 executor 执行，再由 verifier 按 acceptance 验收。harness 把 goal、acceptance 和 out_of_scope 发给两者，把 approach 仅发给 executor，把 procedure 仅发给 verifier。executor 据共享标准交付，负责构建与本阶段规定的测试范围（穿刺为代表用例，正式交付为全量），按测试执行模板保存命令、退出码、源码/测试/构建产物哈希、加载路径及逐用例原始结果。verifier 只读核对证据有效性及交付物质量，并独立检视代码；不重复构建或测试，不接受只有通过自述的证据。验收报告只由 verifier 交付。执行器最终回复 executed，验证器最终回复 pass/fail；调度、同节点重试和耗尽处理均使用框架原生机制。
+
+整轮退出后，PM 读取日志、退出结果和真实产物，汇总已完成步骤及阻塞证据。交付目标未满足时，使用 workflow2 等新目录规划下一轮必要的修复与验收；前轮确认有效的输入可复制到本轮固定路径并记录来源，前轮状态不得复制或重置。已通过 Codex CLI 替身黑盒探测：当前 harness 重试时下发相同的执行提示词，不自动注入 verifier 的修改意见。因此所有 task 在执行开始时读取已有 `<id>-验收报告.md`；verifier 在返回 pass/fail 前落盘具体意见，报告作为普通任务产物，不参与调度状态。该测试不证明真实模型一定遵守读取指令。跨节点回退、下游失效及用户待答恢复仍无本流程已验证的契约，不另写状态机或调度脚本。
+
+入口由工作区 PM 在当前用户会话中承接；PM 不进入调度图。节点角色仅使用 ops-direct-invoke-architect（方案）、ops-direct-invoke-developer（代码、调试与文档）及 ops-direct-invoke-verifier（验收与检视）。角色信息由安装后的客户端角色配置和 executor/verifier 名称衔接，不在任务里额外要求读取 agents 文件。真实 provider 的角色和 Skill 加载仍需验证，模拟执行通过不代表角色权限或 NPU 实测通过。
+
+范围包含本地开发与交付；不包含性能采集、迭代、回归复核、性能验收、回顾、经验总结、PR、外部 CI 和合并。Skill 正文和参考资料只描述自身职责，不调用或路由到其他 Skill；跨 Skill 的组合由 Agent 或 task 的 approach/procedure 显式声明。

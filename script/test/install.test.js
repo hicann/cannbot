@@ -1,3 +1,7 @@
+// Copyright (c) 2026 CANNBot contributors
+// SPDX-License-Identifier: MIT
+// See script/LICENSE for the full license text.
+
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -341,13 +345,14 @@ test("ops-direct-invoke source init is a standalone installer", () => {
   assert.equal(existsSync(join(root, "agents", "qa.md")), true);
 });
 
-test("source init defaults to the source repository root", () => {
+test("source init defaults to the source repository root and reads the manifest name", () => {
   const sandbox = createSandbox("cannbot-init-default-");
   const fixtureRepository = join(sandbox, "repository");
   const pluginDir = join(fixtureRepository, "plugins", "fixture-plugin");
   const fixtureCli = join(fixtureRepository, "script", "bin", "cannbot.js");
   const capture = join(sandbox, "args.json");
-  mkdirSync(pluginDir, { recursive: true });
+  mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
+  writeFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "fixture-entry" }));
   mkdirSync(join(fixtureRepository, "script", "bin"), { recursive: true });
   writeFileSync(fixtureCli, [
     "const fs = require('node:fs');",
@@ -364,13 +369,15 @@ test("source init defaults to the source repository root", () => {
   const args = JSON.parse(readFileSync(capture, "utf8"));
   assert.deepEqual(args, [
     "install",
-    "fixture-plugin",
+    "fixture-entry",
     "--tool",
     "opencode",
     "--target",
     fixtureRepository,
     "--source",
     fixtureRepository,
+    "--plugin-dir",
+    pluginDir,
   ]);
 });
 

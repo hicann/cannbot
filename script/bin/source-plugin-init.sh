@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 CANNBot contributors
+# SPDX-License-Identifier: MIT
+# See script/LICENSE for the full license text.
+
 
 set -euo pipefail
 
 PLUGIN_DIR="$(cd "${1:?plugin directory is required}" && pwd)"
 shift
-PLUGIN_ID="$(basename "${PLUGIN_DIR}")"
+PLUGIN_ID="$(node -p 'require(process.argv[1]).name' "${PLUGIN_DIR}/.claude-plugin/plugin.json")"
 
 usage() {
   cat >&2 <<EOF
@@ -53,4 +57,4 @@ fi
 INSTALL_PATH="${INSTALL_PATH:-${REPOSITORY_ROOT}}"
 
 exec node "${CLI}" install "${PLUGIN_ID}" \
-  --tool "${TOOL}" --target "${INSTALL_PATH}" --source "${REPOSITORY_ROOT}"
+  --tool "${TOOL}" --target "${INSTALL_PATH}" --source "${REPOSITORY_ROOT}" --plugin-dir "${PLUGIN_DIR}"

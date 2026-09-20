@@ -1,3 +1,7 @@
+// Copyright (c) 2026 CANNBot contributors
+// SPDX-License-Identifier: MIT
+// See script/LICENSE for the full license text.
+
 import {
   cpSync,
   existsSync,
@@ -19,8 +23,11 @@ function assertInside(root, candidate, label) {
   throw new Error(`${label} escapes its repository root: ${candidate}`);
 }
 
-export function pluginSourceDefinition(repositoryRoot, pluginId) {
-  const pluginRoot = join(repositoryRoot, "plugins", pluginId);
+export function pluginSourceDefinition(repositoryRoot, pluginId, pluginDirectory = null) {
+  const pluginRoot = pluginDirectory ?? ["plugins", "plugins-community"]
+    .map((parent) => join(repositoryRoot, parent, pluginId))
+    .find((candidate) => existsSync(join(candidate, "plugin-sources.json")))
+    ?? join(repositoryRoot, "plugins", pluginId);
   const definitionPath = join(pluginRoot, "plugin-sources.json");
   if (!existsSync(definitionPath)) return null;
   const definition = readJson(definitionPath);
@@ -35,10 +42,13 @@ export function pluginSourceDefinition(repositoryRoot, pluginId) {
 
 export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
   const sourcePluginRoot = join(repositoryRoot, "plugins");
-  const pluginIds = selectedPluginIds ?? readdirSync(sourcePluginRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(sourcePluginRoot, entry.name, "plugin-sources.json")))
-    .map((entry) => entry.name)
-    .sort();
+  const pluginIds = selectedPluginIds ?? ["plugins", "plugins-community"].flatMap((parent) => {
+    const root = join(repositoryRoot, parent);
+    return existsSync(root) ? readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "plugin-sources.json")))
+      .map((entry) => entry.name) : [];
+  }).sort();
+  if (new Set(pluginIds).size !== pluginIds.length) throw new Error("duplicate plugin ids");
 
   mkdirSync(join(outputRoot, "plugins"), { recursive: true });
   const pluginLicense = join(sourcePluginRoot, "LICENSE");
@@ -51,7 +61,9 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
     if (!source) throw new Error(`plugin has no source definition: ${pluginId}`);
     const manifestPath = join(source.pluginRoot, ".claude-plugin", "plugin.json");
     const manifest = readJson(manifestPath);
-    if (manifest.name !== pluginId) throw new Error(`plugin manifest name disagrees with directory: ${manifestPath}`);
+    if (typeof manifest.name !== "string" || !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(manifest.name)) {
+      throw new Error(`invalid plugin manifest name: ${manifestPath}`);
+    }
     const destination = join(outputRoot, "plugins", pluginId);
     rmSync(destination, { recursive: true, force: true });
     mkdirSync(destination, { recursive: true });
@@ -78,7 +90,11 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
       if (names.has(skillName)) throw new Error(`duplicate Skill name in ${pluginId}: ${skillName}`);
       names.add(skillName);
       const skillDestination = join(destination, "skills", skillName);
-      cpSync(skillSource, skillDestination, { recursive: true, dereference: true });
+      cpSync(skillSource, skillDestination, {
+        recursive: true,
+        dereference: true,
+        filter: (path) => basename(path) !== "__pycache__" && !path.endsWith(".pyc"),
+      });
       const skillManifest = join(skillDestination, "SKILL.md");
       const skillMd = readFileSync(skillManifest, "utf8")
         .replace(/^disable-model-invocation:\s*true\s*$/m, "disable-model-invocation: false");
@@ -115,7 +131,7 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
       join(destination, ".claude-plugin", "plugin.json"),
       `${JSON.stringify(manifest, null, 2)}\n`,
     );
-    assembled.push({ pluginId, destination, skills: names.size });
+    assembled.push({ pluginId: manifest.name, destination, skills: names.size });
   }
 
   return assembled;
