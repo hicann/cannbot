@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+# ----------------------------------------------------------------------------------------------------------
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+# ----------------------------------------------------------------------------------------------------------
+"""
+Local Optimum Detection and Direction Coverage Check
+
+Detects whether the optimization has plateaued (local optimum) by checking
+recent rounds for diminishing returns, and tracks direction coverage
+for the Agent Loop's stop/switch decision system.
+
+Usage:
+    python3 check_local_optimum.py \
+        --op-dir triton_ascend_output/{op_name}-{algorithm}-{run_tag} \
+        --window 3 --max-gain 0.02
+
+Output (JSON):
+    {
+        "in_local_optimum": false,
+        "window_size": 3,
+        "max_gain": 0.02,
+        "gains": [...],
+        "warnings": [],
+        "direction_coverage": { ... }
+    }
+"""
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+from direction_selector import get_low_yield_directions
+from workspace_utils import read_round_summaries
+
+
+def _read_round_summaries(op_dir: Path) -> list[dict[str, Any]]:
+    """Read summary.json from each opt-round-* directory."""
+    rounds = []
+    for data in read_round_summaries(op_dir):
+        rounds.append({
+            "round_index": data.get("round_index", 0),
+            "round_dir": data["round_dir"],
+            "best_speedup": data["best_speedup"],
+            "round_strategy": data.get("round_strategy", ""),
+            "direction": data.get("direction", ""),
+            "analysis_policy": data.get("analysis_policy", "pattern_entry"),
+            "status": "success" if data.get("success", False) else "unknown",
+            "direction_yield": data.get("direction_yield"),
+            "yield_reason": data.get("yield_reason"),
+        })
+    return rounds
+
+
+def _valid_gain_pair(prev: Any, curr: Any) -> bool:
+    """Return True when both speeds are positive numbers usable for gain."""
+    if not isinstance(prev, (int, float)) or not isinstance(curr, (int, float)):
+        return False
+    return prev > 0 and curr > 0
+
+
+def _compute_gains(
+    rounds: list[dict[str, Any]],
+) -> tuple[list[float | None], list[dict[str, Any]]]:
+    """Compute consecutive-round gains, emitting None for invalid pairs."""
+    gains: list[float | None] = []
+    gain_details: list[dict[str, Any]] = []
+    for i in range(1, len(rounds)):
+        prev = rounds[i - 1]["best_speedup"]
+        curr = rounds[i]["best_speedup"]
+        gain = (curr - prev) / prev if _valid_gain_pair(prev, curr) else None
+        gains.append(gain)
+        gain_details.append({
+            "from": rounds[i - 1]["round_dir"],
+            "to": rounds[i]["round_dir"],
+            "from_speedup": prev,
+            "to_speedup": curr,
+            "gain": gain,
+        })
+    return gains, gain_details
+
+
+def _evaluate_window(
+    gains: list[float | None],
+    window: int,
+    max_gain: float,
+    warnings: list[str],
+) -> bool:
+    """Decide local-optimum status from the trailing window of gains."""
+    valid_gains = [g for g in gains[-window:] if g is not None]
+    if len(valid_gains) < window:
+        warnings.append(
+            f"insufficient valid gains in window: need {window}, got {len(valid_gains)}"
+        )
+        return len(valid_gains) >= 2 and all(g < max_gain for g in valid_gains)
+    return all(g < max_gain for g in valid_gains)
+
+
+def check_local_optimum(
+    op_dir: Path | str,
+    window: int = 3,
+    max_gain: float = 0.02,
+) -> dict[str, Any]:
+    """Check if recent rounds show diminishing returns (local optimum).
+
+    Reads round data from opt-round-*/summary.json and calculates
+    the gain between consecutive rounds. If all gains within the
+    sliding window are below max_gain, the optimizer is in a local optimum.
+
+    Args:
+        op_dir: Operator directory containing opt-round-* directories.
+        window: Number of recent rounds to check (default: 3).
+        max_gain: Maximum gain threshold (default: 0.02 = 2%).
+
+    Returns:
+        dict with in_local_optimum, gains, warnings.
+    """
+    if isinstance(op_dir, str):
+        op_dir = Path(op_dir)
+
+    result: dict[str, Any] = {
+        "in_local_optimum": False,
+        "window_size": window,
+        "max_gain": max_gain,
+        "gains": [],
+        "warnings": [],
+        "direction_coverage": {},
+    }
+
+    if not op_dir.is_dir():
+        result["warnings"].append(f"op_dir not found: {op_dir}")
+        return result
+
+    rounds = _read_round_summaries(op_dir)
+
+    if len(rounds) < 2:
+        result["warnings"].append(f"insufficient rounds ({len(rounds)}) for local optimum detection")
+        result["direction_coverage"] = check_direction_coverage(op_dir, rounds)
+        return result
+
+    gains, gain_details = _compute_gains(rounds)
+    result["gains"] = gain_details
+    result["in_local_optimum"] = _evaluate_window(gains, window, max_gain, result["warnings"])
+
+    # Direction coverage
+    result["direction_coverage"] = check_direction_coverage(op_dir, rounds)
+
+    # Per-direction consecutive low-gain count.
+    result["per_direction_low_gain"] = _compute_per_direction_low_gain(rounds, max_gain)
+
+    return result
+
+
+def _compute_per_direction_low_gain(
+    rounds: list[dict[str, Any]],
+    max_gain: float,
+) -> dict[str, int]:
+    """Count consecutive low-gain rounds per direction.
+
+    A round counts as low-gain for its direction if the gain from the previous
+    round is below max_gain.
+    """
+    counts: dict[str, int] = {}
+    current_streak: dict[str, int] = {}
+    for i, r in enumerate(rounds):
+        direction = r.get("direction", "")
+        if not direction:
+            continue
+        if i == 0:
+            current_streak[direction] = 0
+            continue
+        prev_speedup = rounds[i - 1].get("best_speedup", 0)
+        curr_speedup = r.get("best_speedup", 0)
+        if _valid_gain_pair(prev_speedup, curr_speedup):
+            gain = (curr_speedup - prev_speedup) / prev_speedup
+            if gain < max_gain:
+                current_streak[direction] = current_streak.get(direction, 0) + 1
+            else:
+                current_streak[direction] = 0
+        else:
+            current_streak[direction] = current_streak.get(direction, 0) + 1
+        counts[direction] = max(counts.get(direction, 0), current_streak.get(direction, 0))
+    return counts
+
+
+def check_direction_coverage(
+    op_dir: Path | str,
+    rounds: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Summarize historically attempted optimization directions.
+
+    With pattern_index.md removed, there is no static catalog. The result only
+    describes directions that have actually been tried, plus their latest yield.
+    The old ``total_patterns`` / ``coverage_ratio`` / ``untried_patterns``
+    fields are omitted because a fixed catalog no longer exists; reporting them
+    as zero would be misleading.
+
+    Returns:
+        dict with attempted_patterns, low_yield_patterns, attempt_details,
+        and direction_yields.
+    """
+    if isinstance(op_dir, str):
+        op_dir = Path(op_dir)
+
+    if rounds is None:
+        rounds = _read_round_summaries(op_dir)
+
+    # Collect attempted directions and their latest yield.
+    attempted: set[str] = set()
+    direction_yields: dict[str, str] = {}
+    direction_details = []
+    for r in rounds:
+        direction = r.get("direction", "")
+        if direction and direction != "no_change":
+            attempted.add(direction)
+            direction_yields[direction] = r.get("direction_yield") or direction_yields.get(direction, "")
+            direction_details.append({
+                "direction": direction,
+                "round_dir": r["round_dir"],
+                "status": r.get("status", "unknown"),
+                "yield": r.get("direction_yield"),
+            })
+
+    low_yield = get_low_yield_directions(rounds)
+
+    return {
+        "attempted_patterns": sorted(list(attempted)),
+        "low_yield_patterns": sorted(list(low_yield)),
+        "attempt_details": direction_details,
+        "direction_yields": direction_yields,
+    }
+
+
+def _group_attempts(rounds: list[dict[str, Any]]) -> tuple[dict, set[str]]:
+    """Group round attempts by direction and analysis_policy."""
+    attempts_by_direction: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    known_patterns: set[str] = set()
+    for r in rounds:
+        direction = r.get("direction", "")
+        if not direction or direction == "no_change":
+            continue
+        policy = r.get("analysis_policy", "pattern_entry") or "pattern_entry"
+        attempts_by_direction[direction][policy].append(r)
+        known_patterns.add(direction)
+    return attempts_by_direction, known_patterns
+
+
+def check_direction_exhaustion(
+    op_dir: Path | str,
+    rounds: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Check whether all attempted optimization directions are exhausted.
+
+    A direction is considered exhausted only when it has been tried at all
+    three analysis_policy levels (pattern_entry → bottleneck_analysis →
+    ir_supported) and every attempt was low-yield or failed.
+
+    With pattern_index.md removed, known directions are only those that have
+    actually been attempted in this optimization session. There is therefore no
+    separate "untried" set; a direction is either active or exhausted.
+
+    Returns:
+        dict with direction_exhausted, exhausted_directions, active_directions,
+        known_directions, and per-direction policy coverage details.
+    """
+    if isinstance(op_dir, str):
+        op_dir = Path(op_dir)
+
+    if rounds is None:
+        rounds = _read_round_summaries(op_dir)
+
+    policy_levels = ["pattern_entry", "bottleneck_analysis", "ir_supported"]
+    attempts_by_direction, known_patterns = _group_attempts(rounds)
+
+    exhausted: set[str] = set()
+    active: set[str] = set()
+    for direction in known_patterns:
+        policy_attempts = attempts_by_direction.get(direction, {})
+        if not all(level in policy_attempts for level in policy_levels):
+            active.add(direction)
+            continue
+        all_low = all(
+            r.get("direction_yield") in ("low", "failed")
+            for level in policy_levels
+            for r in policy_attempts[level]
+        )
+        if all_low:
+            exhausted.add(direction)
+        else:
+            active.add(direction)
+
+    direction_exhausted = bool(known_patterns) and all(d in exhausted for d in known_patterns)
+
+    return {
+        "direction_exhausted": direction_exhausted,
+        "exhausted_directions": sorted(exhausted),
+        "active_directions": sorted(active),
+        "known_directions": sorted(known_patterns),
+        "per_direction_policy": {
+            d: {level: len(attempts_by_direction[d].get(level, [])) for level in policy_levels}
+            for d in sorted(known_patterns)
+        },
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Check local optimum and direction coverage"
+    )
+    parser.add_argument("--op-dir", required=True, help="Operator directory path")
+    parser.add_argument("--window", type=int, default=3, help="Window size for gain check (default: 3)")
+    parser.add_argument("--max-gain", type=float, default=0.02, help="Max gain threshold (default: 0.02)")
+    args = parser.parse_args()
+
+    op_dir = Path(args.op_dir).expanduser().resolve()
+    if not op_dir.is_dir():
+        sys.stdout.write(json.dumps({
+            "in_local_optimum": False,
+            "warnings": [f"op_dir not found: {op_dir}"],
+        }) + "\n")
+        return 1
+
+    result = check_local_optimum(op_dir, args.window, args.max_gain)
+    sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
