@@ -119,6 +119,19 @@
       ]
     },
     {
+      "name": "harness-skills",
+      "category": "skills",
+      "strict": false,
+      "source": {
+        "source": "local",
+        "path": "harness"
+      },
+      "skills": [
+        "./workflow-orchestrator",
+        "./workflow-rollback-advice"
+      ]
+    },
+    {
       "name": "ops-direct-invoke",
       "source": "./plugins/ops-direct-invoke",
       "description": "skill 驱动的多角色直调算子开发工作流 Team。PM 调度 architect / developer(-code/-test/-doc) / qa 六角色，8 阶段 7 CP 全流程（需求→设计→开发→验收→上库），支持静默模式、可插拔流程插件与算子仓继承定制。",
@@ -174,6 +187,25 @@
       "category": "development",
       "dependencies": [
         "model-infer-skills"
+      ]
+    },
+    {
+      "name": "ops-registry-invoke",
+      "source": "./plugins/ops-registry-invoke",
+      "description": "ACLNN算子开发工作流",
+      "version": "1.0.0",
+      "author": {
+        "name": "CANNBot"
+      },
+      "keywords": [
+        "aclnn",
+        "registry-invoke",
+        "operator",
+        "orchestrator"
+      ],
+      "category": "development",
+      "dependencies": [
+        "harness-skills"
       ]
     }
   ]

@@ -1,0 +1,1202 @@
+# Minimal op-develop workflow driving the shared workflow-orchestrator skill.
+# The orchestrator wires the Codex layout ($WORK_DIR/.agents/skills plus
+# $WORK_DIR/.codex/agents) automatically via link_agent_config.py.
+workflow: op-develop
+max_parallel: 10
+system_prompt: If needed, dispatch multi subagents to explore code under $WORK_DIR/requirements/references(if exists) relevant to this task, as development reference.
+nodes:
+  - id: detect-npu-arch
+    task_type: normal
+    title: Detect the current platform's NPU arch
+    executor: general-executor
+    verifier: general-verifier
+    depends_on: []
+    goal:
+      - Run `asys info -r hardware` to query the current platform's hardware information, extract the NPU architecture, and write it to $WORK_DIR/npu-arch.json.
+    approach:
+      - Run `asys info -r hardware` and capture its full output.
+      - Identify the NPU architecture in that output.
+      - Create $WORK_DIR/ if it does not already exist, then write the architecture as JSON to $WORK_DIR/npu-arch.json.
+    acceptance:
+      - $WORK_DIR/npu-arch.json exists and parses as valid JSON.
+      - The file records the NPU architecture, and the recorded value matches what `asys info -r hardware` reports for this platform.
+    out_of_scope:
+      - Do not create or modify any file other than $WORK_DIR/npu-arch.json.
+      - Do not install, upgrade, or reconfigure anything; only read the environment.
+    max_retries: 2
+    on_exhaust: exit
+  - id: create-requirements-dir
+    task_type: normal
+    title: Create the requirements analysis directory
+    executor: general-executor
+    verifier: general-verifier
+    depends_on: []
+    goal:
+      - Create the requirements analysis directory at $WORK_DIR/requirements/.
+    approach:
+      - Create $WORK_DIR/ if it does not already exist.
+      - Create $WORK_DIR/requirements/ under it.
+    acceptance:
+      - $WORK_DIR/requirements/ exists and is a directory.
+    out_of_scope:
+      - Do not create or modify any file other than the $WORK_DIR/requirements/ directory.
+    max_retries: 2
+    on_exhaust: exit
+  - id: setup-reference-repos
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Shallow-clone the reference source repos
+    goal:
+      - "Create $WORK_DIR/requirements/references/ and shallow-clone (--depth 1) the reference source repos required by the requirement analysis into cann/, ascend/, competitor/ subdirectories."
+    approach:
+      - "Create $WORK_DIR/requirements/references/ if it does not already exist, then create cann/, ascend/, competitor/ subdirectories under it."
+      - "For each clone command below, skip it if the target directory already contains a .git subdirectory; otherwise run it as-is."
+      - "git clone --depth 1 https://gitcode.com/cann/ops-nn.git $WORK_DIR/requirements/references/cann/ops-nn"
+      - "git clone --depth 1 https://gitcode.com/cann/ops-math.git $WORK_DIR/requirements/references/cann/ops-math"
+      - "git clone --depth 1 https://gitcode.com/cann/ops-transformer.git $WORK_DIR/requirements/references/cann/ops-transformer"
+      - "git clone --depth 1 https://gitcode.com/cann/ops-cv.git $WORK_DIR/requirements/references/cann/ops-cv"
+      - "git clone --depth 1 https://gitcode.com/cann/ops-rand.git $WORK_DIR/requirements/references/cann/ops-rand"
+      - "git clone --depth 1 https://gitcode.com/cann/canndev.git $WORK_DIR/requirements/references/cann/canndev"
+      - "git clone --depth 1 https://gitcode.com/Ascend/op-plugin.git $WORK_DIR/requirements/references/ascend/op-plugin"
+      - "git clone --depth 1 https://gitcode.com/Ascend/torchair.git $WORK_DIR/requirements/references/ascend/torchair"
+      - "git clone --depth 1 https://github.com/pytorch/pytorch.git $WORK_DIR/requirements/references/competitor/pytorch"
+      - "git clone --depth 1 https://github.com/tensorflow/tensorflow.git $WORK_DIR/requirements/references/competitor/tensorflow"
+      - "Report which repos were cloned, skipped (already present), or failed to clone."
+    acceptance:
+      - "$WORK_DIR/requirements/references/ exists and contains cann/, ascend/, competitor/ subdirectories."
+      - "Each of these ten target directories contains a .git subdirectory: cann/ops-nn, cann/ops-math, cann/ops-transformer, cann/ops-cv, cann/ops-rand, cann/canndev, ascend/op-plugin, ascend/torchair, competitor/pytorch, competitor/tensorflow."
+    out_of_scope:
+      - "Do not modify any repo's contents, checkout a different branch, or run any build inside the repos."
+      - "Do not create or modify any file outside $WORK_DIR/requirements/references/."
+    depends_on:
+      - create-requirements-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: setup-ops-test-kit
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Clone the ops-test-kit repo
+    goal:
+      - "Clone the ops-test-kit repository into $WORK_DIR/ops-test-kit."
+    approach:
+      - "Create $WORK_DIR/ if it does not already exist."
+      - "Skip the clone if $WORK_DIR/ops-test-kit already contains a .git subdirectory; otherwise run `git clone --depth 1 https://gitcode.com/cann/ops-test-kit $WORK_DIR/ops-test-kit`."
+    acceptance:
+      - "$WORK_DIR/ops-test-kit exists and contains a .git subdirectory."
+    out_of_scope:
+      - "Do not modify the repo's contents, checkout a different branch, or run any build inside the repo."
+      - "Do not create or modify any file outside $WORK_DIR/ops-test-kit/."
+    depends_on: []
+    max_retries: 2
+    on_exhaust: exit
+  - id: verify-ops-test-kit
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Verify TTK works in the current environment
+    goal:
+      - "Determine whether TTK works in the current environment, for later operator functional and performance verification."
+      - "Faithfully run the environment check and the three shipped sample test commands (kernel, geir, aclnn; the e2e path is excluded), save each command's output to disk, and report the results exactly as produced (PASS or FAIL, as-is)."
+    approach:
+      - "Change into the cloned repo: `cd $WORK_DIR/ops-test-kit` (TTK commands must run from the ops-test-kit directory)."
+      - "Create the output directory: `mkdir -p ttk-verify`."
+      - "Run the environment check and save its output: `python3 -m ttk info > ttk-verify/env-info.txt 2>&1`."
+      - "Pick the input files at runtime instead of hardcoding them: for kernel and geir pick any one file from `examples/case_store/kernel/*.csv`, for aclnn pick any one from `examples/case_store/aclnn/*.csv` (e.g. the first match of `ls <dir>/*.csv | head -1`). Record which file each command used."
+      - "Run the three runnable sample test paths in order with the picked files, each saving its full output to a log file under ttk-verify/ (skip the e2e path entirely — it is out of scope for this verification):"
+      - "`python3 -m ttk kernel -i <picked-kernel.csv> > ttk-verify/kernel.log 2>&1`"
+      - "`python3 -m ttk geir -i <picked-kernel.csv> > ttk-verify/geir.log 2>&1`"
+      - "`python3 -m ttk aclnn -i <picked-aclnn.csv> > ttk-verify/aclnn.log 2>&1`"
+    acceptance:
+      - "Every command was actually executed and its output saved: $WORK_DIR/ops-test-kit/ttk-verify/ contains env-info.txt (non-empty, with a `Found N device(s)` block) and the three logs kernel.log, geir.log, aclnn.log (each non-empty, containing a `TTK Test Summary` block). e2e.log is not required."
+      - "The environment is verified OK: each of the three logs' `TTK Test Summary` block shows `FAIL     : 0` and `PassRate : 100.00%`. Any FAIL means the environment is not usable, so the task fails and the workflow exits."
+    out_of_scope:
+      - "Do not fix or work around any failure: do not edit example CSVs, docs, or source, do not modify or reinstall anything, and do not retry or patch commands to force a pass; report results exactly as produced."
+      - "Write outputs only under $WORK_DIR/ops-test-kit/ttk-verify/ (build/cache artifacts the repo generates under itself are expected)."
+    depends_on:
+      - setup-ops-test-kit
+    max_retries: 0
+    on_exhaust: exit
+  - id: setup-xpu-server
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Bring up the local xpu-server for cross_check third_party execution
+    goal:
+      - "Start a local xpu-server that executes the golden plugin's third_party reference (competitor torch) for cross_check comparison, and write $WORK_DIR/ttk.conf.yaml pointing TTK at it; every later ttk invocation (kernel and aclnn flows) carries --config $WORK_DIR/ttk.conf.yaml."
+    approach:
+      - "The server ships inside the ops-test-kit clone. Make its package importable and start it detached: mkdir -p $WORK_DIR/xpu-run && ln -sfn $WORK_DIR/ops-test-kit/ttk/remote/server $WORK_DIR/xpu-run/xpu_server."
+      - "Start with --devices cpu always: (cd $WORK_DIR/xpu-run && PYTHONPATH=$WORK_DIR/xpu-run setsid python3 -m xpu_server.xpu_server --port 9090 --devices cpu </dev/null > $WORK_DIR/xpu-run/xpu-server.log 2>&1 &). A bare start (without --devices cpu) auto-detects no hardware, falls back to cpu, yet keeps use_device=true with device_ids=[cpu] — the dispatcher then computes max_attempts=0 and every /v1/run silently returns 500 'internal error' leaving no log."
+      - "Reuse an already-listening server on 127.0.0.1:9090 (TCP connect succeeds AND GET http://127.0.0.1:9090/v1/heartbeat returns HTTP 200 with JSON containing \"status\":\"ok\" and \"providers\" including \"torch\") instead of starting a second one — this allows multiple operators to share one xpu-server on the same machine. If the existing server is not a healthy xpu_server with the torch provider, kill it and start a fresh one with the command above."
+      - "If you started a new server, wait up to 60s for the port to accept connections."
+      - "Write $WORK_DIR/ttk.conf.yaml with remote: endpoints: [{host: 127.0.0.1, port: 9090}]."
+    acceptance:
+      - "127.0.0.1:9090 accepts a TCP connection (python3 -c \"import socket; s=socket.create_connection(('127.0.0.1',9090),5); s.close()\" exits 0)."
+      - "GET http://127.0.0.1:9090/v1/heartbeat returns HTTP 200 with JSON body containing \"status\":\"ok\" and \"providers\" including \"torch\" (python3 -c \"import urllib.request,json; r=urllib.request.urlopen('http://127.0.0.1:9090/v1/heartbeat',timeout=5); d=json.loads(r.read()); assert r.status==200 and d.get('status')=='ok' and 'torch' in d.get('providers',[]), d\" exits 0)."
+      - "$WORK_DIR/ttk.conf.yaml exists, parses as YAML, and its remote.endpoints[0] is host 127.0.0.1 port 9090."
+    out_of_scope:
+      - "Create only $WORK_DIR/ttk.conf.yaml and the $WORK_DIR/xpu-run/ directory; modify nothing under $WORK_DIR/ops-test-kit."
+    depends_on:
+      - setup-ops-test-kit
+    max_retries: 2
+    on_exhaust: exit
+  - id: analyze-requirements
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Generate the requirements analysis document REQUIREMENTS.md
+    goal:
+      - "Produce $WORK_DIR/requirements/REQUIREMENTS.md for the operator described in $USER_PROMPT, covering its functional scope, inputs/outputs, and constraints, along with the research intermediates under $WORK_DIR/requirements/research/."
+    approach:
+      - "First read the customer requirement from the file named by $USER_PROMPT (the user prompt); extract the operator name and any specified runtime environment, invocation, network, dtype, or shape requirements."
+      - "Load the ops-requirement-analysis skill first (mandatory) and follow its pipeline: stage 1 name resolution, stage 2 three-way research (model / competitor / CANN), stage 3 requirement summary per its references/output_template.md."
+      - "Treat $WORK_DIR/requirements/references/ (cann/, ascend/, competitor/ subdirectories) as the skill's reference/ tree for empirical source search."
+      - "Consult the local built-in proto at $ASCEND_OPP_PATH/built-in/op_proto/inc/ as the highest-authority CANN fact source."
+      - "Use the chip platform recorded in $WORK_DIR/npu-arch.json as the runtime-environment evidence."
+      - "Fill any missing customer-requirement fields with the skill's defaults (Ascend 950PR/950DT, single-op + PyTorch) and mark them as assumptions; decide autonomously, never ask the user."
+    acceptance:
+      - "$WORK_DIR/requirements/REQUIREMENTS.md exists and is non-empty."
+      - "The document has the fixed section structure (## 1 需求背景 through ## 8 需求分析总结) with all sections filled."
+      - "Supported data types, chip platform / runtime environment, and the operator formula are all traceable in the document."
+      - "No bare COPY: directives remain; table of contents entries match the body headings."
+      - "The §7.4 performance requirement section lists at least 4 concrete key shapes, states the source route (A / B / both not applicable), and fills in no target values."
+      - "req-verifier reviews the document item by item per agents/req-verifier.md; every check passes."
+    out_of_scope:
+      - "Do not write spec.yaml, DESIGN.md, or any implementation code; this task only produces the requirements document and its research intermediates."
+    depends_on:
+      - setup-reference-repos
+    max_retries: 1
+    on_exhaust: exit
+  - id: generate-spec
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Generate the operator spec file spec.yaml
+    goal:
+      - "Produce $WORK_DIR/spec/spec.yaml for the operator described in $WORK_DIR/requirements/REQUIREMENTS.md: a machine-checkable structured operator spec translated from and consistent with it, with no omission and no invented addition (every field traceable to REQUIREMENTS.md)."
+      - "Use $WORK_DIR/spec/ as this task's working directory; the spec artifact is written there."
+    approach:
+      - "Load the ops-spec-gen skill first (mandatory); decide category and paradigms from its registries (category_enum.yaml, paradigm_enum.yaml, category_paradigm_map.yaml), never by intuition."
+      - "Confirm $WORK_DIR/requirements/REQUIREMENTS.md exists; extract operator category/paradigms, input tensors + dtypes, output dtype/shape rules, math formula, reference oracle, numerical tolerance, boundary cases, target chips (runtime environment section), and non-tensor attributes."
+      - "Generate the skeleton with the generator (never hand-write spec.yaml): python3 skills/ops-spec-gen/scripts/generate_spec.py --op-name <op-from-REQUIREMENTS> --category <Category> --paradigms <P1,P2> --inputs \"n1:dt1,dt2;n2:...\" --outputs <out> --description \"...\" --output-dir $WORK_DIR/spec"
+      - "Select the conditional generator options per the skill's rule table: for Reduction categories choose --axis-source (fixed / implicit_all / input_tensor) by the operator's interface; add --paradigm-groups combination when the operator has mode-switch attributes; add --format-variants when computation differs by data layout."
+      - "Hand-fill the required TODO fields per the skill: math_semantics.formula, reference_oracle.api, dtype_policy.supported_combinations, numerical_tolerance.per_dtype, op.platform_constraints.supported_chips, outputs[].shape_rule/dtype_rule, and determinism (accumulation_order / bitwise_reproducible); for VariableOutput/DynamicShape operators declare outputs[].shape_rule_kind: data_dependent with shape_rule_description + shape_bounds.max_elements instead of a shape_rule expression; review boundary_conditions / extreme_inputs / format_variants as needed. The formula form must match the 'core formula' row in REQUIREMENTS section 6 step by step."
+      - "Always write the top-level cross_check block — it is the default precision standard for every operator: {standard: cross_check, level: the REQUIREMENTS-declared level, L1 when unspecified}."
+      - "Run python3 skills/ops-spec-gen/scripts/validate_spec.py $WORK_DIR/spec/spec.yaml; fix and rerun on any FAIL until overall: PASS (exit 0); a stage SKIP (e.g. stage 9 without torch, stage 10 with unreachable oracle) counts as pass."
+      - "Self-verify: stop and report if any spec-owned field conflicts with REQUIREMENTS rather than choosing silently."
+    acceptance:
+      - "$WORK_DIR/spec/spec.yaml exists, is non-empty, and parses as YAML: python3 -c \"import yaml; yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))\" exits 0."
+      - "11-stage validation passes: python3 skills/ops-spec-gen/scripts/validate_spec.py $WORK_DIR/spec/spec.yaml ends with overall: PASS (exit 0)."
+      - "No TODO or placeholder residue: ! grep -qiE 'TODO|<[A-Z_]+>' $WORK_DIR/spec/spec.yaml."
+      - "cross_check present as the default: python3 -c \"import yaml; cc=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['cross_check']; assert cc['standard']=='cross_check' and cc.get('level','L1') in ('L0','L1','L2')\" exits 0."
+      - "spec-verifier reviews per agents/spec-verifier.md (11-stage + SPEC-* clauses) and cross-checks every spec-owned field against $WORK_DIR/requirements/REQUIREMENTS.md item by item: no omission, no invented addition; all clauses must be ✓ or ⚠ (no ❌) — machine-checkable clauses pass, ⚠ hints do not block."
+    out_of_scope:
+      - "Produce only $WORK_DIR/spec/spec.yaml: do not create or modify any other file — including $WORK_DIR/requirements/REQUIREMENTS.md, LOG.md/LOG.json (logging is handled by the workflow runner), or any implementation code."
+    depends_on:
+      - analyze-requirements
+    max_retries: 1
+    on_exhaust: exit
+  - id: setup-op-package
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Bootstrap the operator package from the closest sample
+    goal:
+      - "Initialize a buildable, ACLNN-verified custom operator package at $WORK_DIR/op/ by copying the closest sample from the plugin's operators/ directory and renaming it to the target operator; the run package installs into $WORK_DIR/dev-package/."
+      - "Prove the ACLNN test passes against that install, and record evidence that both the header the test compiles against and the library it loads at runtime come from $WORK_DIR/dev-package/."
+    approach:
+      - "Derive the operator's three name forms from spec.yaml: OP_SNAKE = op.name, OP_PASCAL = PascalCase, OP_UPPER = UPPER_SNAKE."
+      - "Resolve the sample source directory: WORKFLOW_YAML=$(python3 -c \"import json; print(json.load(open('$WORK_DIR/.workflow/status.json'))['workflow'])\") ; OPERATORS_DIR=$(dirname \"$(dirname \"$WORKFLOW_YAML\")\")/operators ; test -d $OPERATORS_DIR — the samples live one level up from the workflow yaml (per status.json's workflow key), never under $WORK_DIR."
+      - "Select the closest sample under $OPERATORS_DIR by the spec's op.paradigms (same-shape elementwise -> add_custom_package; broadcast -> scale_custom_package); record the chosen sample's snake/Pascal/UPPER forms as SAMPLE_SNAKE/SAMPLE_PASCAL/SAMPLE_UPPER."
+      - "mkdir -p $WORK_DIR/op && cp -r $OPERATORS_DIR/<SAMPLE_SNAKE>_package/. $WORK_DIR/op/ — flatten so $WORK_DIR/op/ is the package root."
+      - "Adapt $WORK_DIR/op/build.sh: build its own directory (drop the package-name argument), and run the generated .run with --install-path=$WORK_DIR/dev-package (mkdir -p first) so the package lands under $WORK_DIR/dev-package/vendors/<OP_PASCAL>/."
+      - "Rename every file under $WORK_DIR/op/ whose name contains SAMPLE_SNAKE to OP_SNAKE, then replace the three name forms in every file's content: SAMPLE_PASCAL->OP_PASCAL, SAMPLE_SNAKE->OP_SNAKE, SAMPLE_UPPER->OP_UPPER; also remove every trace of the other candidate sample's name forms so the full sample-name set is gone (the no-residue acceptance greps add_custom|AddCustom|ADD_CUSTOM|scale_custom|ScaleCustom|SCALE_CUSTOM)."
+      - "Update the ACLNN test to consume the dev-package install: fix tests/aclnn/run.sh's build.sh path (the package is now one level shallower) and drop its package-name argument; point the test's include/link directories and LD_LIBRARY_PATH at $WORK_DIR/dev-package/vendors/<OP_PASCAL>/op_api/ instead of the system opp vendors directory; export ASCEND_CUSTOM_OPP_PATH=$WORK_DIR/dev-package/vendors/<OP_PASCAL> (or source the installed package's bin/set_env.bash) so the ACLNN/OpAPI runtime discovers the vendor op and its kernel from the dev-package install."
+      - "Build and run the ACLNN test, writing $WORK_DIR/op/tests/aclnn/verify.log with the compile header path, the ASCEND_CUSTOM_OPP_PATH value, the ldd-resolved libcust_opapi.so path, and the test output."
+    acceptance:
+      - "$WORK_DIR/op/ contains the package skeleton: test -d $WORK_DIR/op/op_host && test -d $WORK_DIR/op/op_kernel && test -d $WORK_DIR/op/op_graph && test -d $WORK_DIR/op/tests && test -f $WORK_DIR/op/build.sh && test -f $WORK_DIR/op/CMakeLists.txt && test -f $WORK_DIR/op/README.md."
+      - "No sample-name residue: ! grep -rE 'add_custom|AddCustom|ADD_CUSTOM|scale_custom|ScaleCustom|SCALE_CUSTOM' $WORK_DIR/op/."
+      - "Run package installed into dev-package: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; test -s $WORK_DIR/dev-package/vendors/$OP_PASCAL/op_api/lib/libcust_opapi.so."
+      - "ACLNN test passes: cd $WORK_DIR/op/tests/aclnn && ./run.sh > /tmp/aclnn-run.log 2>&1 && ! grep -qF 'FAILED' /tmp/aclnn-run.log."
+      - "Loaded library resolves under dev-package: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; ldd $WORK_DIR/op/tests/aclnn/build/test_aclnn | grep -F 'libcust_opapi.so' | grep -qF $WORK_DIR/dev-package/vendors/$OP_PASCAL."
+      - "Both aclnn symbols exported from the dev-package library: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; test $(nm -D $WORK_DIR/dev-package/vendors/$OP_PASCAL/op_api/lib/libcust_opapi.so | grep -cE 'aclnn'$OP_PASCAL'(GetWorkspaceSize)?') -eq 2."
+      - "verify.log records $WORK_DIR/dev-package/ as the source of the compile header, the loaded library, and the runtime vendor discovery path: test -s $WORK_DIR/op/tests/aclnn/verify.log && grep -qF 'ASCEND_CUSTOM_OPP_PATH' $WORK_DIR/op/tests/aclnn/verify.log && grep -qF $WORK_DIR/dev-package $WORK_DIR/op/tests/aclnn/verify.log."
+    out_of_scope:
+      - "Keep the sample's operator semantics unchanged (input count and kernel math change in later tasks)."
+      - "Do not modify $OPERATORS_DIR — the sample stays the shared template."
+      - "Only create or modify files under $WORK_DIR/op/ and $WORK_DIR/dev-package/."
+    depends_on:
+      - generate-spec
+    max_retries: 2
+    on_exhaust: exit
+  - id: init-design-dir
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Initialize the design document directory structure
+    goal:
+      - "Create $WORK_DIR/design/branches/ as a directory and $WORK_DIR/design/INDEX.md whose content equals $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/INDEX.md.templ with every {OP} replaced by the operator name from spec.yaml."
+    approach:
+      - "OP_NAME=$(python3 -c \"import yaml; print(yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name'])\")"
+      - "mkdir -p $WORK_DIR/design/branches"
+      - "sed \"s/{OP}/${OP_NAME}/g\" $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/INDEX.md.templ > $WORK_DIR/design/INDEX.md"
+    acceptance:
+      - "$WORK_DIR/design/ and $WORK_DIR/design/branches/ exist and are directories."
+      - "$WORK_DIR/design/INDEX.md exists and is non-empty."
+      - "No placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/INDEX.md."
+    out_of_scope:
+      - "Do not create any design document other than INDEX.md; the remaining design files are produced by later tasks."
+      - "Do not create or modify any file outside $WORK_DIR/design/."
+    depends_on:
+      - generate-spec
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-overview
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document Overview.md
+    goal:
+      - "Produce $WORK_DIR/design/Overview.md for the operator in $WORK_DIR/spec/spec.yaml: operator function, natural-language definition, LaTeX math formula, and special-value / numerical-stability semantics, all traceable to $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory)."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/Overview.md.templ to $WORK_DIR/design/Overview.md (this template carries no {OP} placeholder; do not introduce one)."
+      - "Read $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml, then fill the four sections from them: ## 算子功能 (one sentence), ## 算子定义(自然语言) (exact computation semantics: input relationships and attr effect), ## 数学公式(LaTeX) (a strict LaTeX formula — the single semantic source for every branch kernel and golden), ## 特殊值与数值稳定性 (NaN/+Inf/-Inf/0/negative behaviour aligned with golden; overflow/underflow/divide-by-zero and saturation/clamp; the precision-sensitive step and whether high-precision accumulation is required)."
+      - "Replace every `>` lead-in line with actual design content; keep the four section headings; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/Overview.md exists and is non-empty: test -s $WORK_DIR/design/Overview.md."
+      - "No placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/Overview.md."
+      - "All four section headings remain: grep -qF '## 算子功能' $WORK_DIR/design/Overview.md && grep -qF '## 算子定义(自然语言)' $WORK_DIR/design/Overview.md && grep -qF '## 数学公式(LaTeX)' $WORK_DIR/design/Overview.md && grep -qF '## 特殊值与数值稳定性' $WORK_DIR/design/Overview.md."
+      - "Every `>` lead-in has been replaced with real content: ! grep -qE '^>' $WORK_DIR/design/Overview.md; the ## 数学公式(LaTeX) section contains a LaTeX formula, and the content is traceable to $WORK_DIR/requirements/REQUIREMENTS.md / $WORK_DIR/spec/spec.yaml."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/Overview.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - init-design-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-interface
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document Interface.md
+    goal:
+      - "Produce $WORK_DIR/design/Interface.md for the operator in $WORK_DIR/spec/spec.yaml: the operator prototype (ATen IR + Inputs/Outputs/Attrs), the supported dtype combination table, data format support, and constraints/limitations, all traceable to $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory)."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/Interface.md.templ to $WORK_DIR/design/Interface.md (this template carries no {OP} placeholder; do not introduce one)."
+      - "Read $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml, then fill the sections from them: ## 算子原型 (ATen IR plus Inputs/Outputs/Attrs with name, semantics, shape contract, optionality and defaults), ## 算子规格(受支持 dtype 组合) (a table laid out by Inputs/Outputs, one row per supported combination), ## 数据 Format 支持, ## 约束与限制 (shape range / rank cap / per-axis length cap, dtype / format / attr-value constraints, alignment, broadcast rules, explicitly unsupported scenarios), and ## OpDef 代码片段 (a complete OpDef class body generated from the prototype + spec, DataType({...}) arrays expanded per combination, all Input/Output lists equal length)."
+      - "Fill the ## 算子规格(受支持 dtype 组合) table row by row from spec.yaml: its rows/content must match spec.yaml exactly (no placeholder rows, no `<...>` residue in that table)."
+      - "Replace every `>` lead-in line with actual design content; keep the section headings; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/Interface.md exists and is non-empty: test -s $WORK_DIR/design/Interface.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/Interface.md."
+      - "No `<...>` placeholder residue in the OpDef / dtype table: ! grep -qE '<(Op|op|in[0-9]*|out[0-9]*|optional_in|attr|req_attr|bool_attr|default|soc)>' $WORK_DIR/design/Interface.md."
+      - "Every `>` lead-in has been replaced with real content: ! grep -qE '^>' $WORK_DIR/design/Interface.md."
+      - "The ## 算子规格(受支持 dtype 组合) table has no placeholder rows and its rows/content match $WORK_DIR/spec/spec.yaml's supported combinations exactly."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/Interface.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - init-design-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-infershape-dtype
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document InferShapeDtype.md
+    goal:
+      - "Produce $WORK_DIR/design/InferShapeDtype.md for the operator in $WORK_DIR/spec/spec.yaml: the InferShape and InferDataType derivation rules (how outputs are derived from inputs), traceable to $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory)."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/InferShapeDtype.md.templ to $WORK_DIR/design/InferShapeDtype.md (this template carries no {OP} placeholder; do not introduce one)."
+      - "Read $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml, then fill the two sections: ## InferShape (per-output shape derivation; broadcast alignment rule and per-dim output size; DynamicShape value/attr-driven derivation logic when applicable; empty/scalar/rank-mismatch edge cases) and ## InferDataType (per-output dtype source and any dtype promotion; the consistency check point against Interface.md's 算子规格 table)."
+      - "Replace every `>` lead-in line with actual derivation rules consistent with $WORK_DIR/spec/spec.yaml's supported_combinations; keep the section headings; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/InferShapeDtype.md exists and is non-empty: test -s $WORK_DIR/design/InferShapeDtype.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/InferShapeDtype.md."
+      - "Every `>` lead-in has been replaced with actual derivation rules: ! grep -qE '^>' $WORK_DIR/design/InferShapeDtype.md; the rules are consistent with $WORK_DIR/spec/spec.yaml's supported_combinations."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/InferShapeDtype.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - init-design-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-validation
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document Validation.md
+    goal:
+      - "Produce $WORK_DIR/design/Validation.md: the operator-wide end-to-end verification criteria (Golden reference, test-case matrix, per-dtype precision tolerances, performance targets), traceable to $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory)."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/Validation.md.templ to $WORK_DIR/design/Validation.md (this template carries no {OP} placeholder; do not introduce one)."
+      - "Read $WORK_DIR/requirements/REQUIREMENTS.md and $WORK_DIR/spec/spec.yaml, then fill: ## 参考实现 (Golden) (a PyTorch / CPU reference or formula anchored to Overview.md's math formula, independent of the kernel under test — no self-verification), ## 端到端测试用例矩阵 (shape × dtype × format matrix covering every supported dtype combination, every branch, special values, max shape, non-aligned, broadcast if supported), and ## 精度验收标准 (per-dtype rtol/atol plus pointwise special-value alignment)."
+      - "Fill ## 性能目标: carry over §7.4 of $WORK_DIR/requirements/REQUIREMENTS.md — list at least 4 key shapes aligned with real points that exist in this document's 端到端测试用例矩阵 (leave the `tilingKey` column empty for now, to be completed by the later calibration task from BranchCatalog.md), select the source route (A competitor profiling / B theoretical evaluation / both not applicable), and fill in the target-metric definition and achievement-rate algorithm per row."
+      - "Leave the target-value column empty in this task (it is back-filled by a later calibration task using measured/estimated values); do not invent any number here."
+      - "Replace every `>` lead-in line with actual content; keep the section headings; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/Validation.md exists and is non-empty: test -s $WORK_DIR/design/Validation.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/Validation.md."
+      - "Every `>` lead-in has been replaced with real content: ! grep -qE '^>' $WORK_DIR/design/Validation.md; the 参考实现 (Golden) is explicitly independent of the kernel under test, and 精度验收标准 gives per-dtype rtol/atol."
+      - "grep -qF '性能目标' $WORK_DIR/design/Validation.md; its key-shape count is ≥ 4 and its shape/dtype values and source route match §7.4 of $WORK_DIR/requirements/REQUIREMENTS.md item by item; the target-value column is empty or marked 待标定, with no invented numbers."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/Validation.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - init-design-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-devview-tilingkey-tilingdata-branchroute
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design documents DevView.md / TilingKey.md / TilingData.md / BranchRoute.md
+    goal:
+      - "Produce $WORK_DIR/design/DevView.md, $WORK_DIR/design/TilingKey.md, $WORK_DIR/design/TilingData.md, and $WORK_DIR/design/BranchRoute.md for the operator in $WORK_DIR/spec/spec.yaml, following the operator's paradigm patterns.md."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory), and load the paradigm patterns.md corresponding to $WORK_DIR/spec/spec.yaml's op.paradigms."
+      - "Before writing TilingKey.md / BranchRoute.md, load the ascendc-build-system skill and read references/tiling-key-encoding.md; encode every tilingKey with the paradigm's GET_TPL_TILING_KEY actual bit encoding (never self-invented logical sequence numbers)."
+      - "Copy the four templates $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/{DevView,TilingKey,TilingData,BranchRoute}.md.templ to $WORK_DIR/design/, replacing every {OP} with the operator name (sed \"s/{OP}/${OP_NAME}/g\" with OP_NAME from spec.yaml; BranchRoute.md.templ carries no {OP} and is copied as-is)."
+      - "Write DevView.md (开发视图) from its template: describe the file organization strictly per the paradigm patterns.md — the {op}_package/ project tree (op_host/ {op}_def.cpp OpDef registration with dtype/format combos and .ValueDepend(OPTIONAL) on value-dependent inputs, {op}_infershape.cpp InferShape/InferDataType registration matching InferShapeDtype.md, arch35/ tiling entry + split functions and the {OP}CompileInfo header; op_kernel/ arch35/ kernel templates, empty-tensor template, tiling_data.h TilingData struct, struct.h TilingKey template params, and the kernel-entry source declaring the __global__ __aicore__ entry that instantiates all TilingKey combinations). Replace every `>` lead-in."
+      - "Write TilingKey.md (TilingKey 模板划分) from its template, following its 须包含 checklist item by item: (1) the TilingKey C++ struct definition as ASCENDC_TPL_* code, with no TilingKeyIS numeric branches unless the paradigm requires them; (2) the TPL_SEL combination table listing every TilingKey value combination with its trigger condition and covered dtype/shape; (3) the template partition table and binary instance count, where every boundary-case routing row is an actually reachable branch. Keep the branch-split discipline: only real structural/path differences become separate tilingKeys, pure parameter differences are parameterized. The tilingKey set produced here is the single source for BranchRoute.md and BranchCatalog.md. Replace every `>` lead-in."
+      - "Write TilingData.md (TilingData 汇总结构体) from its template, following its 须包含 checklist item by item: (1) the complete TilingData C++ struct definition; (2) the field table (name / type / meaning / source from HostTiling.md / kernel consumption point from Kernel.md); (3) paradigm-specific constraints (e.g. Reduction valid/padded separation, cacheBufUbSize) where applicable. Replace every `>` lead-in."
+      - "Write BranchRoute.md (分支判定与场景覆盖) from its template, following its 须包含 checklist item by item: (1) the tilingKey routing table (tilingKey / branch name / entry condition / covered scenario / corresponding Interface.md 算子规格 row); (2) branch priority and mutual-exclusion with a routing decision flowchart, where no two branches cover the same case; (3) the scenario coverage matrix, where every supported dtype combination falls into at least one branch. Its tilingKey set must match TilingKey.md exactly. Replace every `>` lead-in."
+      - "Keep each template's section headings; do not touch any other design file."
+    acceptance:
+      - "All four files exist and are non-empty: test -s $WORK_DIR/design/DevView.md && test -s $WORK_DIR/design/TilingKey.md && test -s $WORK_DIR/design/TilingData.md && test -s $WORK_DIR/design/BranchRoute.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/DevView.md $WORK_DIR/design/TilingKey.md $WORK_DIR/design/TilingData.md $WORK_DIR/design/BranchRoute.md."
+      - "No `<...>` placeholder residue in the TilingKey / BranchRoute tables: ! grep -qE '<(name|case|dtype|shape|值|条件)>' $WORK_DIR/design/TilingKey.md $WORK_DIR/design/BranchRoute.md."
+      - "Every `>` lead-in in each of the four files has been replaced with actual content: ! grep -qE '^>' $WORK_DIR/design/DevView.md $WORK_DIR/design/TilingKey.md $WORK_DIR/design/TilingData.md $WORK_DIR/design/BranchRoute.md."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/DevView.md, TilingKey.md, TilingData.md, BranchRoute.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - init-design-dir
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-host-tiling
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document HostTiling.md
+    goal:
+      - "Produce $WORK_DIR/design/HostTiling.md for the operator in $WORK_DIR/spec/spec.yaml, following the operator's paradigm patterns.md Host-side Tiling chapter."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory); read the Host-side Tiling chapter of the paradigm patterns.md (or other tiling content if absent) to determine the subsection structure."
+      - "Read $WORK_DIR/spec/spec.yaml's determinism block (accumulation_order + bitwise_reproducible) and consult skills/ops-spec-gen/references/accumulation_order.md §0/§1/§3; make the split/tiling decisions consistent with it (stable_in_axis → partials merged in fixed order; bitwise_reproducible: true → document how the kernel path is fixed) and record this in the determinism guarantees subsection."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/HostTiling.md.templ to $WORK_DIR/design/HostTiling.md, replacing every {OP} with the operator name (sed \"s/{OP}/${OP_NAME}/g\" with OP_NAME from spec.yaml)."
+      - "Fill each subsection per the template's 须包含 checklist (liveness-node analysis, framework prerequisites, input preprocessing/axis fusion, UB split, multi-core split, group/2D split, fill TilingData + set TilingKey, host registration, overall Tiling structure, determinism guarantees); replace every `>` lead-in line with actual content; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/HostTiling.md exists and is non-empty: test -s $WORK_DIR/design/HostTiling.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/HostTiling.md."
+      - "Every `>` lead-in has been replaced with actual content: ! grep -qE '^>' $WORK_DIR/design/HostTiling.md."
+      - "Determinism is explicit and grounded: grep -qF 'accumulation_order' $WORK_DIR/design/HostTiling.md && grep -qF 'bitwise_reproducible' $WORK_DIR/design/HostTiling.md."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/HostTiling.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - write-design-devview-tilingkey-tilingdata-branchroute
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-kernel
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document Kernel.md
+    goal:
+      - "Produce $WORK_DIR/design/Kernel.md for the operator in $WORK_DIR/spec/spec.yaml, following the operator's paradigm patterns.md Kernel-side chapter."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory); read the Kernel-side chapter of the paradigm patterns.md and confirm the paradigm-specific requirements (the template's item 9 H4 breakdown)."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/Kernel.md.templ to $WORK_DIR/design/Kernel.md, replacing every {OP} with the operator name (sed \"s/{OP}/${OP_NAME}/g\" with OP_NAME from spec.yaml)."
+      - "Fill each item per the template's 须包含 checklist (Kernel entry, Kernel class declaration, scheduling framework, Init, Process per dtype, Sync, CopyIn/CopyInBrc, CopyOut, paradigm-specific Kernel subsections); replace every `>` lead-in line with actual content; do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/Kernel.md exists and is non-empty: test -s $WORK_DIR/design/Kernel.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/Kernel.md."
+      - "Every `>` lead-in has been replaced with actual content: ! grep -qE '^>' $WORK_DIR/design/Kernel.md."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/Kernel.md; do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - write-design-host-tiling
+      - write-design-interface
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-api
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document API.md
+    goal:
+      - "Produce $WORK_DIR/design/API.md for the operator in $WORK_DIR/spec/spec.yaml: API mapping, API verification record, data-flow design, memory management, and UB capacity verification — the closing acceptance of the implementation-plan docs (DevView.md–API.md)."
+    approach:
+      - "Load the ascendc-regbase-best-practice skill first (mandatory); read the paradigm patterns.md sections on API mapping / API verification record / memory management / data-flow design / UB capacity verification to determine the subsection structure."
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/API.md.templ to $WORK_DIR/design/API.md (this template carries no {OP} placeholder; do not introduce one)."
+      - "Fill each item per the template's 须包含 checklist (VF function signatures, API mapping table, API verification record, data-flow design, memory management, UB capacity verification); replace every `>` lead-in line with actual content."
+      - "Per the template, if any API verification fails, roll back to $WORK_DIR/design/HostTiling.md to re-derive with a different API — this task may revise HostTiling.md / Kernel.md at the corresponding places until all API verifications pass."
+    acceptance:
+      - "$WORK_DIR/design/API.md exists and is non-empty: test -s $WORK_DIR/design/API.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/API.md."
+      - "Every `>` lead-in has been replaced with actual content: ! grep -qE '^>' $WORK_DIR/design/API.md."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/API.md (and, only if an API verification fails, revise HostTiling.md / Kernel.md at the corresponding places); do not create or modify any other file."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - write-design-kernel
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-design-branch-catalog
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the design document BranchCatalog.md
+    goal:
+      - "Produce $WORK_DIR/design/BranchCatalog.md: the branch design catalog table registering, for every tilingKey, the branch name / entry condition / covered scenario / design file path, derived from $WORK_DIR/design/BranchRoute.md's branch determination."
+    approach:
+      - "Copy $WORK_DIR/.agents/skills/ops-registry-invoke/templates/design/BranchCatalog.md.templ to $WORK_DIR/design/BranchCatalog.md, replacing every {OP} with the operator name (sed \"s/{OP}/${OP_NAME}/g\" with OP_NAME from spec.yaml)."
+      - "Based on $WORK_DIR/design/BranchRoute.md's branch determination, write the catalog table: one row per tilingKey, registering branch name / entry condition / covered scenario / design file path $WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md."
+      - "The tilingKey set in BranchCatalog.md must match $WORK_DIR/design/BranchRoute.md exactly."
+      - "Only register the catalog here; do not write any branch's detailed design, and do not touch any other design file."
+    acceptance:
+      - "$WORK_DIR/design/BranchCatalog.md exists and is non-empty: test -s $WORK_DIR/design/BranchCatalog.md."
+      - "No operator-name placeholder residue: ! grep -qF '{OP}' $WORK_DIR/design/BranchCatalog.md."
+      - "No `<...>` placeholder residue in the catalog table: ! grep -qE '<(name|条件|case)>' $WORK_DIR/design/BranchCatalog.md."
+      - "Every `>` lead-in has been replaced with real content: ! grep -qE '^>' $WORK_DIR/design/BranchCatalog.md."
+      - "The catalog table has one row per tilingKey, matching $WORK_DIR/design/BranchRoute.md's key set exactly (no missing, no extra), and each row references $WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md."
+      - "No unexpected file under $WORK_DIR/design/: ! find $WORK_DIR/design -maxdepth 1 -type f | grep -vE '/(INDEX|Overview|Interface|InferShapeDtype|Validation|DevView|TilingKey|TilingData|BranchRoute|HostTiling|Kernel|API|BranchCatalog|IterationPlan)[.]md$' | grep -q ."
+    out_of_scope:
+      - "Write only $WORK_DIR/design/BranchCatalog.md; do not create or modify any other file (including the branch design files, which are produced by a later task)."
+      - "Do not write kernel code, modify the engineering project, or run builds."
+    depends_on:
+      - write-design-devview-tilingkey-tilingdata-branchroute
+    max_retries: 2
+    on_exhaust: exit
+  - id: generate-design-subgraph
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Generate the branch design subgraph design-sub-graph.yaml
+    goal:
+      - "Read $WORK_DIR/design/BranchCatalog.md and produce $WORK_DIR/.workflow/design-sub-graph.yaml: one designer task per tilingKey writing $WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md, each node satisfying the subgraph contract and carrying depends_on: [] (branches are independent)."
+    approach:
+      - "Read $ORCH_SKILL/templates/basic_workflow.yaml first (ORCH_SKILL=skills/workflow-orchestrator) — the annotated schema template; the node keys and their list/str/int requirements are documented inline there, so take the node shape from it."
+      - "Write the subgraph form: a mapping whose sole top-level key is nodes holding normal nodes only. Enumerate every tilingKey in BranchCatalog.md in registration order, one node per key, executor=designer / verifier=design-verifier, each writing $WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md."
+      - "Branch design nodes are independent — each writes its own file and shares no state — so every node's depends_on is []."
+    acceptance:
+      - 'Contract-valid: ORCH_SKILL=skills/workflow-orchestrator ; python3 -c "import sys; sys.path.insert(0,\"$ORCH_SKILL/scripts\"); import get_task; nodes,err=get_task.load_subgraph(\"$WORK_DIR/.workflow/design-sub-graph.yaml\"); assert not err, err" exits 0.'
+      - 'Dep-free: python3 -c "import yaml; nodes=yaml.safe_load(open(\"$WORK_DIR/.workflow/design-sub-graph.yaml\")[\"nodes\"]; bad=[n[\"id\"] for n in nodes if n[\"depends_on\"]]; assert not bad, \"every node carries no dependency (depends_on: []); offenders: %s\" % bad" exits 0.'
+      - "Node count equals the tilingKey count in BranchCatalog.md (no missing, no extra); node ids/titles/acceptance are traceable to BranchCatalog.md / BranchRoute.md; every node has executor=designer and verifier=design-verifier."
+    out_of_scope:
+      - "Do not create or modify any file other than $WORK_DIR/.workflow/design-sub-graph.yaml."
+      - "Do not execute the branch design tasks; do not write any branch design file."
+    depends_on:
+      - write-design-branch-catalog
+      - write-design-api
+      - write-design-overview
+      - write-design-validation
+    max_retries: 2
+    on_exhaust: exit
+  - id: design-branches
+    task_type: subgraph
+    file: .workflow/design-sub-graph.yaml
+    depends_on:
+      - generate-design-subgraph
+  - id: update-opdef
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Transcribe the OpDef from Interface.md; keep the kernel entry as a compiling no-op stub
+    goal:
+      - "Rewrite $WORK_DIR/op/op_host/*_def.cpp so its `class ... : public OpDef` body matches the `## OpDef 代码片段` fenced cpp block in $WORK_DIR/design/Interface.md exactly."
+      - "Align the kernel entry's param list — in the $WORK_DIR/op/op_kernel/ source declaring the `__global__ __aicore__` entry — to the `Kernel 入口` section of $WORK_DIR/design/Kernel.md as a no-op stub (no compute yet); it only needs to compile."
+    approach:
+      - "Read the `## OpDef 代码片段` fenced cpp block in $WORK_DIR/design/Interface.md — the authoritative, already-resolved OpDef; record its Input/Output names in declaration order."
+      - "Rewrite $WORK_DIR/op/op_host/*_def.cpp: keep the file header, `#include \"register/op_def_registry.h\"`, and the `namespace ops { ... }` wrapper; replace only the `class ... : public OpDef` body (from `class` to its closing `};`) and the `OP_ADD(...)` macro with the snippet's — do not paste the snippet's `namespace ops { ... }` wrapper, the file already has one."
+      - "Read the `Kernel 入口` section of $WORK_DIR/design/Kernel.md for the kernel entry signature (symbol name + param list); this is the authoritative source for the entry, not the OpDef names."
+      - "Rewrite the kernel-entry source (the $WORK_DIR/op/op_kernel/ file declaring the `__global__ __aicore__` entry): take the entry symbol name and param list (input tensors in order, then output tensors, then workspace, then tiling) from Kernel.md's 入口 code, keeping the package's existing entry boilerplate (`extern \"C\" __global__ __aicore__ void <op>`, `__gm__ uint8_t*` params) and the tiling readout (REGISTER_TILING_DEFAULT + GET_TILING_DATA); drop the compute (no kernel class call), leaving a no-op stub (InitSocState + tiling readout + PipeBarrier). Silence an unused `tilingData` with `(void)tilingData;`, and drop the kernel-header include if the stub no longer uses it."
+      - "cd $WORK_DIR/op && ./build.sh — exit 0. The build's CMake falls back to $ENV{ASCEND_HOME_PATH} when CANN_HOME is unset; only if both are unset, source the toolkit's bin/set_env.bash first."
+    acceptance:
+      - "cd $WORK_DIR/op && ./build.sh exits 0."
+      - "def.cpp transcribes the snippet: the `this->Input(\"...\")` / `this->Output(\"...\")` names in $WORK_DIR/op/op_host/*_def.cpp appear in the same order as in the `## OpDef 代码片段` fenced block of $WORK_DIR/design/Interface.md (same names, same order, no extras or missing)."
+      - "No placeholder residue: ! grep -qF '{OP}' $WORK_DIR/op/op_host/*_def.cpp && ! grep -qE '<(Op|op|in[0-9]*|out[0-9]*|optional_in|attr|req_attr|bool_attr|default|soc)>' $WORK_DIR/op/op_host/*_def.cpp."
+    out_of_scope:
+      - "Only $WORK_DIR/op/op_host/*_def.cpp and the $WORK_DIR/op/op_kernel/ kernel-entry source (the file declaring the `__global__ __aicore__` entry) may change (plus build/ regenerated by build.sh)."
+      - "Do not implement the compute — the kernel body is written by the kernel task from design/Kernel.md."
+      - "Do not touch _infershape.cpp, tiling, CMakeLists, or tests; the ACLNN test is stale after the interface change and is updated by the downstream implementation workflow."
+    depends_on:
+      - write-design-kernel
+      - setup-op-package
+    max_retries: 2
+    on_exhaust: exit
+  - id: write-tiling-ut
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Write the Tiling gtest unit test (TDD red baseline, only the exempt tiling(nullptr) case passes)
+    goal:
+      - "Rewrite $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp as the complete Tiling UT for the operator in $WORK_DIR/spec/spec.yaml: one TEST_F per host-tiling feature and per validation/exception exit, expectations from an independent hand-written oracle, following the tiling-developer TDD discipline."
+      - "Exception coverage is checklist-driven: load the tiling-exception-coverage skill (mandatory) and work its full checklist per its procedure (the item set and its mandatory/conditional classification are the skill's own definition, not restated here), recording the coverage matrix as a comment block inside $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp (this workflow relocates the skill's matrix in-file; no separate matrix file); the skill's completion criterion defines done — every item covered or N/A with spec evidence, no third state."
+      - "Install and build the UT in isolation under $WORK_DIR/op/tests/tiling/dev-package/, run it against the red-phase stub, and record the red baseline in $WORK_DIR/op/tests/tiling/ut-baseline.log: every scenario failed except the exempt tiling(nullptr) case; the log must show which .so was loaded."
+    approach:
+      - "Load the tiling-exception-coverage skill first (mandatory); its checklist procedure and assertion playbook are the authority for every exception case below."
+      - "Load the tiling-ut-harness skill first (mandatory); its platform-mock mapping table, compile-link recipe, and env_doctor verification are the authority for the mock harness below — do not reverse-engineer SDK binaries when env_doctor returns VERIFIED."
+      - "Derive the case set and the oracle from these sources; each line states what the file provides and the exhaustiveness bar it drives:"
+      - "$WORK_DIR/design/HostTiling.md -> every shared tiling formula becomes a labeled oracle rule, each exercised at its exact threshold and +-1 (core-count, alignment, buffer budget), plus tail-block and multi-loop paths; every 异常值校验 exit becomes one GRAPH_FAILED case."
+      - "$WORK_DIR/design/TilingData.md section 1 -> the expected TilingData layout, transcribed into the test file (success cases assert every field + blockDim + tilingKey + workspace); section 2 -> per-field semantics."
+      - "$WORK_DIR/design/TilingKey.md + BranchCatalog.md -> the authoritative tilingKey set: one routed success case per key. $WORK_DIR/design/BranchRoute.md -> each key's entry condition, and which error scenarios are rejections (never routed to a key)."
+      - "$WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md 「具体切分计算 (Tiling formulas)」-> per-branch oracle constants and formulas."
+      - "$WORK_DIR/design/Interface.md 算子规格 table -> one success case per supported dtype-combination row; the OpDef contract -> how the TilingContext is built (IO count, attrs)."
+      - "$WORK_DIR/design/Kernel.md -> which TilingData fields the kernel reads on degenerate/short-circuit paths; pin only those on such paths."
+      - "$WORK_DIR/spec/spec.yaml -> error_codes, boundary_conditions (empty tensor, rank 0, max rank), shape_constraints/rank_range: one boundary or rejection case each."
+      - "the tiling-exception-coverage skill -> the exception-coverage floor: walk every checklist item per the skill's procedure against the Interface.md IO table / OpDef attrs / spec.yaml constraints; every hit item becomes one TEST_F using the skill's construction recipe and assertion playbook, and the disposition of every item lands as a coverage-matrix comment block inside test_tiling_gtest.cpp, in the skill's row format, as the task's checklist audit trail."
+      - "Establish the red-phase stub first: the package still ships the sample's working tiling, so reduce TilingFunc in $WORK_DIR/op/op_host/arch35/*_tiling_arch35.cpp to the red-phase stub per the tiling-developer TDD discipline before running the UT. The tiling(nullptr) guard case already passes against the stub and is exempt from the 0-passed bar; write it as a normal expect-failure case and record the exemption in the in-file coverage matrix."
+      - "Harness: keep the sample tests/tiling/ pattern B (registry dlopen of the installed op_host .so; fe::PlatFormInfos mock for per-case core count / UB size - at least one non-default value of each wherever a formula consumes it)."
+      - "Isolation: point run.sh's --install-path and CMake's OPP_INSTALL_DIR at $WORK_DIR/op/tests/tiling/dev-package/ (replacing the sample's install/); the .so and headers resolve only under its vendors/<OpPascal>/ tree, and OP_HOST_SO_ABS / LD_LIBRARY_PATH agree with it. The shared $WORK_DIR/dev-package/ stays byte-identical for parallel tasks."
+      - "Evidence: keep the setup print of the loaded .so path."
+      - "Where a design doc leaves a short-circuit path's fields undefined, assert only the pinned contract and comment the gap in the test."
+      - "Run `cd $WORK_DIR/op/tests/tiling && ./run.sh` (non-zero exit expected) and save the full output to ut-baseline.log. Any case beyond the exemptions recorded in the coverage matrix passing against the stub does not discriminate the unimplemented state: sharpen that expectation until the baseline shows only the exemption case(s) passed."
+    acceptance:
+      - "UT artifacts exist with a single source file: test -s $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp && test -f $WORK_DIR/op/tests/tiling/CMakeLists.txt && test -f $WORK_DIR/op/tests/tiling/run.sh && test $(find $WORK_DIR/op/tests/tiling -maxdepth 1 -name '*.cpp' | wc -l) -eq 1."
+      - "Isolated install: test -d $WORK_DIR/op/tests/tiling/dev-package/vendors && find $WORK_DIR/op/tests/tiling/dev-package/vendors -name 'libcust_opmaster_rt2.0.so' | grep -q ."
+      - "Loaded-library evidence: grep -qF 'loading op_host .so' $WORK_DIR/op/tests/tiling/ut-baseline.log && grep -qF $WORK_DIR/op/tests/tiling/dev-package $WORK_DIR/op/tests/tiling/ut-baseline.log."
+      - "Oracle independence: ! grep -qE '#include[[:space:]]+\"[^\"]*(tiling_struct|tiling_arch35)[.]h\"' $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp."
+      - "Red baseline recorded: test -s $WORK_DIR/op/tests/tiling/ut-baseline.log && grep -qF '[==========]' $WORK_DIR/op/tests/tiling/ut-baseline.log && grep -qF '[  FAILED  ]' $WORK_DIR/op/tests/tiling/ut-baseline.log, and the passed set is exactly the exemption rows recorded in the in-file coverage matrix (cases the red-phase stub's own pinned contract satisfies, i.e. the tiling(nullptr) guard) — no other case passes."
+      - "Exception checklist audited in-file: every checklist item the tiling-exception-coverage skill defines appears exactly once in the coverage-matrix comment block of $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp (IDs are whatever the skill currently defines)."
+      - "Checklist row content: every TEST_F name cited in the in-file coverage matrix grep-matches a TEST_F in test_tiling_gtest.cpp; every covered row names its interception layer (infer / tiling / platform); every covered expect-failure row names its asserted log anchor; every N/A row cites Interface.md or spec.yaml as evidence."
+      - "Broadly-applicable items never N/A by default: for the checklist items the skill marks as applying to nearly every operator, N/A is legitimate only when the op spec provably lacks that degree of freedom (e.g. a single-input operator makes the cross-input-dtype item vacuous — the N/A row must say so by quoting the IO table)."
+      - "tiling-verifier reviews per agents/tiling-verifier.md in TilingUT/red-baseline mode, with UT artifacts rooted at $WORK_DIR/op/tests/tiling/ and design docs at $WORK_DIR/design/ (not the operators/{OP}_package / docs/{OP} layout shown in the agent doc), tracing every exhaustiveness bar in this task's approach source list to at least one TEST_F; all clauses pass."
+      - "tiling-verifier additionally re-judges every N/A row of the in-file coverage matrix against the op spec: an N/A whose trigger actually fires (e.g. an operator with broadcast semantics marking the broadcast-rule item N/A) fails the review."
+    out_of_scope:
+      - "Only create or modify files under $WORK_DIR/op/tests/tiling/ (including the build/, dev-package/ and ut-baseline.log artifacts run.sh generates there); the one exception is $WORK_DIR/op/op_host/arch35/*_tiling_arch35.cpp, which may only be reduced to the red-phase stub. $WORK_DIR/dev-package/, op_kernel/, op_graph/, package-root CMakeLists.txt / build.sh and all design docs stay unchanged."
+      - "Do not turn the red baseline green here: the TilingFunc stays stub-only; record design gaps as test comments only."
+    depends_on:
+      - design-branches
+      - update-opdef
+      - setup-op-package
+    max_retries: 2
+    on_exhaust: exit
+  - id: implement-tiling
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Implement the real host Tiling so the entire Tiling UT suite passes (TDD green)
+    goal:
+      - "Replace the stub TilingFunc currently in $WORK_DIR/op/op_host/arch35/*_tiling_arch35.cpp with the real TilingFunc for the operator in $WORK_DIR/spec/spec.yaml — TilingData struct, common split formulas, branch determination with tilingKey setting, validation/short-circuit exits, and the IMPL_OP_OPTILING registration — transcribed from the same $WORK_DIR/design/ docs the UT oracle was derived from."
+      - "Make the complete Tiling UT pass, with the UT itself as the pinned oracle: cd $WORK_DIR/op/tests/tiling && ./run.sh exits 0 with every TEST_F passed and 0 failed, recorded as $WORK_DIR/op/tests/tiling/ut-green.log."
+    approach:
+      - "The Tiling UT at $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp is the read-only pinned oracle (independent hand-written formulas, success and exception cases alike): implement until it passes; the oracle itself is never edited. The completion gate is strict: run.sh exits 0 with every TEST_F passed and 0 failed."
+      - "Implement from the design docs; the UT oracle was derived from the same files, so any deviation shows up as exactly one red case:"
+      - "$WORK_DIR/design/TilingData.md section 1 -> $WORK_DIR/op/op_kernel/arch35/*_tiling_struct.h rewritten field-for-field (no missing, no extra field; units per section 2)."
+      - "$WORK_DIR/design/HostTiling.md -> the common TilingFunc: shared split formulas, every 异常值校验 exit as a GRAPH_FAILED return, the short-circuit/early-return paths it documents (empty tensor among them), TilingData fill + SetBlockDim + workspace sizes, and the determinism guarantees (accumulation_order / bitwise_reproducible) honored in the split order it records."
+      - "$WORK_DIR/design/TilingKey.md + BranchRoute.md -> the authoritative key set: branch determination and SetTilingKey per BranchRoute.md's entry conditions, using the bit encoding fixed at design time (GET_TPL_TILING_KEY or literal, exactly as TilingKey.md documents)."
+      - "$WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md 「具体切分计算」 sections -> per-branch constants and formulas transcribed verbatim into constexpr — never from memory."
+      - "$WORK_DIR/design/Kernel.md -> which TilingData fields degenerate/short-circuit paths read (fill exactly those); $WORK_DIR/spec.yaml boundary_conditions -> the boundary cases the UT pins; $WORK_DIR/design/Interface.md's OpDef contract -> the IO/attr view TilingFunc reads."
+      - "Iterate: implement the common formulas first, then branch by branch, rerunning the full suite after each increment — gtest's failed list is the worklist, and regression means the whole suite stays green, never a subset."
+      - "Reuse the existing harness under $WORK_DIR/op/tests/tiling/ as-is (run.sh, CMakeLists.txt, and the isolated install under dev-package/); consume platform facts (coreNum / ubSize) from CompileInfo when present, with the platform-info fallback the tiling-developer agent doc documents."
+      - "Conflict rule: when an oracle expectation and the implementation disagree, the design doc is the arbiter, and the implementation side is the only side this task may fix. If a case cannot pass without deviating from the design, leave it red and report the conflict as the task outcome — that is a UT defect, and absorbing it by editing the oracle is forbidden."
+      - "Evidence: cd $WORK_DIR/op/tests/tiling && ./run.sh > ut-green.log 2>&1 (exit 0, all pass, loaded-.so print retained); ut-baseline.log stays untouched."
+    acceptance:
+      - "Green baseline fully green: cd $WORK_DIR/op/tests/tiling && ./run.sh > ut-green.log 2>&1 exits 0, and test -s $WORK_DIR/op/tests/tiling/ut-green.log && grep -qF '[  PASSED  ]' $WORK_DIR/op/tests/tiling/ut-green.log && ! grep -qF '[  FAILED  ]' $WORK_DIR/op/tests/tiling/ut-green.log && test -x $WORK_DIR/op/tests/tiling/build/test_tiling_gtest."
+      - "Loaded-library evidence: grep -qF 'loading op_host .so' $WORK_DIR/op/tests/tiling/ut-green.log && grep -qF $WORK_DIR/op/tests/tiling/dev-package $WORK_DIR/op/tests/tiling/ut-green.log."
+      - "No hidden registration failure: ! grep -qi 'do not registe tiling struct' $WORK_DIR/op/tests/tiling/ut-green.log."
+      - "The oracle ran unchanged: the green run's total test count (the `[==========] N tests from M test suites ran` line of ut-green.log) equals the total recorded in $WORK_DIR/op/tests/tiling/ut-baseline.log (its `Running N tests` count); every test name listed in ut-baseline.log appears as a TEST_F in test_tiling_gtest.cpp; the source file remains the sole .cpp: test $(find $WORK_DIR/op/tests/tiling -maxdepth 1 -name '*.cpp' | wc -l) -eq 1."
+      - "Oracle independence unchanged: ! grep -qE '#include[[:space:]]+\"[^\"]*(tiling_struct|tiling_arch35)[.]h\"' $WORK_DIR/op/tests/tiling/test_tiling_gtest.cpp."
+      - "tiling-verifier reviews per agents/tiling-verifier.md in 「Tiling 实现」 mode, with UT artifacts rooted at $WORK_DIR/op/tests/tiling/ and design docs at $WORK_DIR/design/ (not the operators/{OP}_package / docs/{OP} layout shown in the agent doc): dimensions 0/1/2/3/4/5 all pass — TilingData struct fields match TilingData.md (no missing, no extra), branch constants match the DESIGN-BRANCH-<key>.md 「具体切分计算」 sections, SetTilingKey routing matches BranchRoute.md (literal or GET_TPL_TILING_KEY — no literal grep), and the UT source and harness (test_tiling_gtest.cpp, CMakeLists.txt, run.sh) are untouched."
+    out_of_scope:
+      - "Modifiable scope (exhaustive): $WORK_DIR/op/op_kernel/arch35/*_tiling_struct.h, $WORK_DIR/op/op_host/arch35/*_tiling_arch35.h and *_tiling_arch35.cpp, and the artifacts run.sh regenerates under $WORK_DIR/op/tests/tiling/ (build/, dev-package/, ut-green.log). Everything else is read-only, including the pinned-oracle files: test_tiling_gtest.cpp, CMakeLists.txt, run.sh, and ut-baseline.log."
+      - "Do not touch $WORK_DIR/op/op_host/*_def.cpp or *_infershape.cpp, the op_kernel compute sources (the `__global__ __aicore__` kernel-entry source and kernel templates — everything under $WORK_DIR/op/op_kernel/ except the TilingData struct header named in the modifiable scope), op_graph/, package-root CMakeLists.txt / build.sh, $WORK_DIR/dev-package/, or any file under $WORK_DIR/design/."
+    depends_on:
+      - write-tiling-ut
+    max_retries: 2
+    on_exhaust: exit
+  - id: gen-golden
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Generate the TestSpec golden.py and its invariant self-check
+    goal:
+      - "Produce $WORK_DIR/golden.py as a TTK TestSpec-format golden (independent of the kernel under test) for the operator in $WORK_DIR/spec/spec.yaml, plus $WORK_DIR/golden_invariant_check.py which proves the golden satisfies the spec's math_semantics invariants on random inputs."
+    approach:
+      - "Read $WORK_DIR/spec/spec.yaml's reference_oracle and math_semantics; consult the ops-ttk skill's TestSpec conventions (ttk-how-write-plugin + $WORK_DIR/ops-test-kit/ttk/test_spec/examples/)."
+      - "Write $WORK_DIR/golden.py in TestSpec format: __spec__ registration + class with golden and tolerance; implement the reference math from spec.yaml only — never import or reuse anything from $WORK_DIR/op/ (kernel artifacts)."
+      - "Pick the golden body's implementation backend by this fixed priority ladder, stopping at the first tier that holds (equivalent = same semantics as the spec's math_semantics.formula, including optional-input pairing and attr behavior): tier 1 single PyTorch API — one equivalent torch API exists, build the golden body on it. tier 2 single TensorFlow API — one equivalent TF API exists, build the golden body on it. tier 3 PyTorch API composition — no single equivalent API in either framework, but a composition of torch APIs implements the full formula, build the golden body from it. tier 4 TensorFlow API composition — same via a composition of TF APIs. tier 5 NumPy — hand-implement the formula with numpy primitives. When a torch/TF tier is taken, the golden must CALL the chosen API(s) for every part they cover, casting inputs to float64 around each call; re-implementing an API's internals with elementary tensor ops is a tier-5 hand implementation, not a composition — the API's own numerics (including boundary-value behaviour) are the expected values. Record in golden.py's module docstring the tier taken, the exact API(s) chosen, and what each skipped tier lacked."
+      - "Float64 accumulation rule (workflow-mandated, overrides any lower accumulator dtype declared in the spec): wherever the golden performs floating-point accumulation, lift the values to float64 first, accumulate in float64, and cast the final result back to the target output dtype — torch: x.to(torch.float64) -> sum -> .to(out_dtype); tensorflow: tf.cast(x, tf.float64) -> reduce_sum -> tf.cast(out_dtype); numpy: x.astype(np.float64) -> sum -> .astype(out_dtype). Never accumulate in float16/float32."
+      - "When any torch/TF tier (1–4) supplies the golden body — single API or composition — compose it with the float64 rule: cast every input to float64, call the torch/TF API(s), cast the outputs back once to the target dtypes — the framework's internal accumulation then runs in float64."
+      - "Derive tolerance.standard from $WORK_DIR/spec.yaml, never from the operator name. Default classification by op.paradigms (compute paradigms with float output -> stat_rel_err; pure data-reorganization -> binary_equal; int output -> binary_equal; quantization -> quant — the enum set defined by the ttk test_spec validator is authoritative), overridable by the spec's numerical_tolerance. cross_check override (the spec's top-level cross_check block is always present — generate-spec writes it for every operator): set each float16/bfloat16/float32 dtype's tolerance to {standard: cross_check, level: the spec's cross_check.level}; other dtypes keep their classification. Declare the reference_oracle competitor API as third_party — cross_check requires third_party; competitor APIs are reached via the third_party declaration, not an in-process import. A third_party class's __init__/__call__ parameter names must match the op's attribute names verbatim — the xpu-server binds by name, so a camelCase attr never feeds a snake_case parameter and the class silently runs with its default."
+      - "Write $WORK_DIR/golden_invariant_check.py: build 3+ random legal input sets, run every value-level invariant in spec math_semantics.invariants against the golden, print PASS per invariant, exit 0 only if all pass."
+    acceptance:
+      - "$WORK_DIR/golden.py exists and parses: python3 -c \"import ast; ast.parse(open('$WORK_DIR/golden.py').read())\" exits 0; it contains __spec__ registration and a class definition (TestSpec format)."
+      - "Oracle independence: ! grep -qE 'from op|import op/' $WORK_DIR/golden.py (no kernel artifact reuse); golden math matches spec.yaml reference_oracle semantics."
+      - "Backend priority traceable: golden.py's module docstring names the priority tier taken (torch single API / tensorflow single API / torch composition / tensorflow composition / numpy) and the exact API(s) used; for every skipped higher tier it states what equivalent API the search lacked."
+      - "Float64 accumulation: the golden's accumulation path casts to float64 before summing and casts back to the output dtype after (torch: .to(torch.float64); tensorflow: tf.cast(x, tf.float64); numpy: astype(np.float64) -> np.sum -> astype(out_dtype)); no float16/float32 accumulation anywhere in the reduction."
+      - "$WORK_DIR/golden_invariant_check.py exists and python3 $WORK_DIR/golden_invariant_check.py exits 0 with every invariant PASS — deleting or relaxing invariants to force green is forbidden."
+    out_of_scope:
+      - "Create only $WORK_DIR/golden.py and $WORK_DIR/golden_invariant_check.py; do not modify spec.yaml, design docs, or anything under $WORK_DIR/op/."
+    depends_on:
+      - generate-spec
+    max_retries: 2
+    on_exhaust: exit
+  - id: generate-kernel-subgraph
+    task_type: normal
+    executor: general-executor
+    verifier: general-verifier
+    title: Generate the kernel-implementation branch subgraph kernel-sub-graph.yaml
+    goal:
+      - "Read $WORK_DIR/design/BranchCatalog.md and produce $WORK_DIR/.workflow/kernel-sub-graph.yaml: a dict with exactly one top-level key nodes holding 5*M normal nodes, where M = the number of tilingKeys registered in BranchCatalog.md, discovered at runtime and never assumed — one five-task chain per tilingKey, driving kernel development with whitebox cases. Nothing in this task may hardcode an operator name, a tilingKey set, or a branch count."
+    approach:
+      - "Node schema = op-develop.yaml normal task (id, task_type: normal, title, goal, approach, acceptance, out_of_scope, depends_on, executor, verifier, max_retries: 2, on_exhaust: exit). Write the file as a YAML mapping whose sole top-level key is nodes (a bare list is invalid). goal / approach / acceptance / out_of_scope must each be a non-empty LIST of non-empty strings (a plain string is rejected by schema validation) — write each item as a separate list entry with the '- ' prefix, never as one long string."
+      - "Enumerate the tilingKeys in BranchCatalog.md registration order, m = 1..M; per key (with its DESIGN-BRANCH-<key>.md), generate these five chained nodes (ids branch-<m>-<step>):"
+      - "1. branch-<m>-whitebox-gen — executor whitebox-designer, verifier st-verifier: generate this branch's TTK kernel-mode whitebox case set under $WORK_DIR/op/tests/whitebox/branch-<m>/ (design_doc_cases.json + ttk_design_doc_cases.csv) from $WORK_DIR/design/branches/DESIGN-BRANCH-<key>.md §9 branch-verification points and $WORK_DIR/design/Validation.md's matrix rows for this branch; expected values computed by the independent golden $WORK_DIR/golden.py; coverage audit passes; no hardcoded case counts or hand-written CSV."
+      - "2. branch-<m>-kernel-bringup — executor kernel-developer, verifier kernel-verifier: implement this branch's kernel per $WORK_DIR/design/Kernel.md and DESIGN-BRANCH-<key>.md §3–§5; select the first row of this branch's ttk_design_doc_cases.csv as the bring-up case; run it via ttk kernel (cd $WORK_DIR/ops-test-kit; python3 -m ttk kernel -i <branch csv> --compare stat_rel_err --plugin $WORK_DIR/golden.py, single-case filtering per the ttk skill's selection mechanism — phase 1 without cross_check; if it fails, rerun with --compare cross_check --config $WORK_DIR/ttk.conf.yaml to adjudicate before entering precision fix); acceptance: package builds (cd $WORK_DIR/op && ./build.sh exits 0), that one case's precision PASSes, and the four ops-impl-review scripts (scalar_mainchain_check, vf_reachability_check, workspace_consistency_check, non3510_scaffold_check) exit 0 against $WORK_DIR/op."
+      - "3. branch-<m>-run-20pct — executor kernel-developer, verifier st-verifier: batch-run the first ceil(20%) rows of this branch's csv via ttk kernel under the two-phase execution contract (batch-gate semantics (c) below); fix kernel/tiling per DESIGN-BRANCH-<key>.md until every one of them precision-PASSes; never edit cases, golden, or tolerances; log the exact row set used."
+      - "4. branch-<m>-run-50pct — executor kernel-developer, verifier st-verifier: same as step 3 but the batch is the first ceil(50%) rows (cumulative superset of step 3); all must precision-PASS, earlier rows must not regress."
+      - "5. branch-<m>-run-100pct — executor kernel-developer, verifier st-verifier: full-branch batch, every case precision-PASS (hard gate), zero skip/fail, earlier stages regress-checked; results recorded under $WORK_DIR/op/tests/whitebox/branch-<m>/."
+      - "Batch-gate semantics (applies to steps 3–5, bake into every generated batch node): (a) positive/negative split — a row is negative iff the case set marks it expect_error (or names it a rejection scenario); positive rows must precision-PASS and negative rows must be REJECTED by the operator (a precision PASS on a negative row is a defect); report both counts in the evidence. (b) Precision is judged per the design authority — $WORK_DIR/design/Validation.md 精度验收标准 and DESIGN-BRANCH-<key>.md (per-dtype pointwise rtol/atol); when the ttk framework comparator cannot express the design criterion (documented metric blind spots, e.g. small-value/subnormal guards), build a machine-checkable design-criterion checker over --dump outputs and record the analysis in a stage RECORD.md, never silently relaxing or swapping the criterion. (c) Two-phase execution contract (steps 2–5): phase 1 runs without cross_check — --compare stat_rel_err, no --config, local golden comparison only; phase 2 reruns every FAILED positive row with -t adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml (third_party torch via the local xpu-server); cross_check-passing rows are adjudicated green, rows still failing enter precision localization and fix; phase 2 is skipped when phase 1 is all-green. Negative rows follow (a) — REJECTED is their green; adjudicate anomalies likewise."
+      - "Dependencies inside the subgraph: each branch's five nodes chain linearly (gen → bringup → 20 → 50 → 100); every branch-<m>-whitebox-gen has no intra-subgraph dependency (whitebox generation of different branches writes disjoint directories and may run in parallel); for m ≥ 2, branch-<m>-kernel-bringup depends on BOTH branch-<m>-whitebox-gen AND branch-<m-1>-run-100pct — kernel-touching steps of different branches never run concurrently (no resource locks in this orchestrator; shared op_kernel/ entry and aclnn build tree)."
+      - "Every node's goal must state its completion gate explicitly and reference its authoritative design docs by absolute path."
+    acceptance:
+      - 'Contract-valid: ORCH_SKILL=skills/workflow-orchestrator ; python3 -c "import sys; sys.path.insert(0,\"$ORCH_SKILL/scripts\"); import get_task; nodes,err=get_task.load_subgraph(\"$WORK_DIR/.workflow/kernel-sub-graph.yaml\"); assert not err, err" exits 0.'
+      - "$WORK_DIR/.workflow/kernel-sub-graph.yaml exists; M equals the tilingKey count in $WORK_DIR/design/BranchCatalog.md; python3 -c \"import yaml; d=yaml.safe_load(open('$WORK_DIR/.workflow/kernel-sub-graph.yaml')); assert isinstance(d,dict) and set(d)=={'nodes'} and len(d['nodes'])==5*M\" exits 0."
+      - "Node ids are exactly branch-<m>-<step> for m = 1..M and step in {whitebox-gen, kernel-bringup, run-20pct, run-50pct, run-100pct}, in BranchCatalog.md registration order; each chain's DESIGN-BRANCH-<key>.md reference matches its m-th tilingKey."
+      - "Every node satisfies the normal-task schema; executor/verifier pairs are exactly (whitebox-designer, st-verifier) for the M gen nodes, (kernel-developer, kernel-verifier) for the M bringup nodes, and (kernel-developer, st-verifier) for the 3*M batch nodes; dependency edges match the approach (linear chains per branch; for m ≥ 2 branch-<m>-kernel-bringup depends on branch-<m>-whitebox-gen and branch-<m-1>-run-100pct)."
+      - "Each node's acceptance is checkable (exit codes / file paths) and the 20%/50% sampling rule is deterministic (first-N rows, cumulative)."
+    out_of_scope:
+      - "Do not create or modify any file other than $WORK_DIR/.workflow/kernel-sub-graph.yaml; do not execute any branch task; do not write kernel code."
+    depends_on:
+      - gen-golden
+      - implement-tiling
+    max_retries: 2
+    on_exhaust: exit
+  - id: kernel-impl
+    task_type: subgraph
+    file: .workflow/kernel-sub-graph.yaml
+    depends_on:
+      - generate-kernel-subgraph
+      - setup-xpu-server
+  - id: blackbox-gen
+    task_type: normal
+    title: Generate separate ACLNN and REG_OP/kernel ST case sets (L0/L1/L2 plus oversized side tables)
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - update-opdef
+      - setup-op-package
+      - gen-golden
+    goal:
+      - "Produce the full blackbox ACLNN ST case set under $WORK_DIR/op/tests/blackbox/ (design/ intermediates + testcases/ standard *_l0_functional.csv, *_l1_functional.csv, *_l2_exception.csv) for the operator in $WORK_DIR/spec/spec.yaml, designed one-shot from facts independent of the design line: $WORK_DIR/requirements/REQUIREMENTS.md plus the actual interface facts — the proto sources under $WORK_DIR/op/op_graph/ and the actual OpDef in $WORK_DIR/op/op_host/*_def.cpp; reading $WORK_DIR/design/*.md or any existing case set is forbidden, so the blackbox suite stays independent of the whitebox/design line."
+      - "Completion gate: the ascendc-st-design skill's generation, QA and review stages all pass; the case parameter interface (names, order, types, optionality, defaults, output positions; api_name = aclnn<OpPascal>) matches the actual OpDef; resource-oversized cases are isolated into same-stem *_oversized.csv side tables that stay out of the executable suites."
+    approach:
+      - "Load the ascendc-st-design skill first (mandatory — it is the single execution authority for blackbox modeling, generation, QA and standard artifacts; do not restate or bypass its stage procedure); adapt its output layout to this workflow: design/ and testcases/ under $WORK_DIR/op/tests/blackbox/."
+      - "Fact mapping (this workflow's equivalent of the agent doc's REQUIREMENTS + proto.md inputs): $WORK_DIR/requirements/REQUIREMENTS.md -> supported scope, value domains, error semantics; $WORK_DIR/op/op_graph/ proto sources + the actual OpDef in $WORK_DIR/op/op_host/*_def.cpp -> parameter ABI and tensor-to-tensor shape bindings. An explicit conflict between the two fact inputs that would flip a positive/negative classification is reported as FAILED with both locations — never guessed away."
+      - "Run ascendc-st-design twice, once for ACLNN under tests/blackbox/ and once for REG_OP/kernel under tests/blackbox/kernel/, with independent design/testcases and QA. Targets are predetermined; no interface-selection prompt. Kernel operator_name is the verified opInterface.value and attributes use GE names, not ACLNN aliases. Cover applicable rank-0 inputs in both suites. Every tensor's support_non_contiguous is declared explicitly from the facts (false unless explicitly supported); ValueDepend(OPTIONAL) is modeled per the ACLNN ABI; negative scenarios lock original inputs, never derived quantities."
+      - "After the standard CSVs fully pass the skill's generation/QA/review, isolate oversized cases: python3 $WORK_DIR/.agents/skills/ops-registry-invoke/scripts/isolate_oversized_cases.py <the six standard CSVs under $WORK_DIR/op/tests/blackbox/testcases/ and kernel/testcases/> — over-threshold rows move to same-stem *_oversized.csv side tables that never enter the executable suites; thresholds may only be set via the script's documented env overrides and must be recorded; do not shrink factor domains, hand-edit CSVs, or delete side tables to dodge the isolation."
+      - "Record $WORK_DIR/op/tests/blackbox/WORKFLOW_PROVENANCE.json: both fact inputs, the skill's real path and repo revision, conflict conclusions, standard artifacts, per-layer main/side-table counts and effective thresholds, the public QA conclusions, and any requirement scenario that could not be landed."
+    acceptance:
+      - "Both ACLNN and kernel suites contain independently generated standard L0/L1/L2 and full public design/QA reports. Kernel CSVs use input_shapes/output_shapes, verified op_name and GE attribute names; no ACLNN-to-kernel conversion."
+      - "Standard CSVs exist non-empty (each glob resolves at least one file): test -s $WORK_DIR/op/tests/blackbox/testcases/*_l0_functional.csv && test -s $WORK_DIR/op/tests/blackbox/testcases/*_l1_functional.csv && test -s $WORK_DIR/op/tests/blackbox/testcases/*_l2_exception.csv."
+      - "Design intermediates exist non-empty: $WORK_DIR/op/tests/blackbox/design/ contains the skill's standard artifacts 01_parameter_description.md, 02_test_factors.yaml, 03_scenario_enumeration.md, 04_constraints.py, 05_topology.md, 06_review_report.md, each non-empty."
+      - "api_name consistency: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; a python3 csv.DictReader pass over the three standard CSVs asserts every data row's api_name is exactly aclnn$OP_PASCAL."
+      - "Interface consistency with the actual OpDef: parameter names, order, optionality, defaults and output positions in the case set match $WORK_DIR/op/op_host/*_def.cpp, and the tensor-to-tensor shape bindings match the proto contract (st-verifier cross-checks item by item)."
+      - "Oversized isolation is effective and stable: rerunning isolate_oversized_cases.py over both suites' six main CSVs exits 0 and moves zero further rows; *_oversized.csv rows are excluded from the executable suites and the side-table counts are recorded in WORKFLOW_PROVENANCE.json."
+      - "$WORK_DIR/op/tests/blackbox/WORKFLOW_PROVENANCE.json exists, parses as JSON, and records both fact inputs, skill path + revision, conflict conclusions, main/side-table counts and effective thresholds."
+      - "st-verifier reviews per its 用例生成 dimensions (standard artifacts present, structure coverage, interface/shape-binding consistency, no hand-written or sampled CSV) and passes."
+    out_of_scope:
+      - "Write only under $WORK_DIR/op/tests/blackbox/; do not modify kernel/host sources, $WORK_DIR/golden.py, design docs, whitebox case sets, or anything else."
+      - "Do not execute device tests or run any ttk batch; do not hand-write, sample, or post-edit CSV rows; do not delete or shrink side tables to bypass isolation."
+    max_retries: 2
+    on_exhaust: exit
+  - id: blackbox-smoke
+    task_type: normal
+    title: Blackbox smoke - split the three suite CSVs, run the first L0 case to green
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - blackbox-gen
+      - kernel-impl
+      - aclnn-impl-smoke
+      - setup-xpu-server
+    goal:
+      - "Run the first case of the L0 test suite with the TTK framework, fixing precision issues until it passes."
+    approach:
+      - "Locate the cases: use the blackbox-tester skill's merge_cases.py to split the standard layer CSVs under $WORK_DIR/op/tests/blackbox/testcases/ into three executable suites $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv / blackbox_l1.csv / blackbox_l2_neg.csv (*_oversized.csv side tables stay out), and record each suite's data-row count — the --expect-total value for every later task. Done when: the three CSVs exist and the counts are recorded."
+      - "Locate the TTK framework root: $WORK_DIR/ops-test-kit; every ttk command runs from that directory."
+      - "Phase 1 - run the first case without cross_check: read the first row's testcase_name from blackbox_l0.csv and run python3 -m ttk aclnn -i $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv -t <case-name> --pc=1 --task-prof false --run 1 --device-whitelist 0 --input-dist uniform --compare stat_rel_err --plugin $WORK_DIR/golden.py -o $WORK_DIR/op/tests/blackbox/ttk/result_smoke.csv (local golden comparison only, no third_party), with CANN debug logging tee'd to smoke_debug.log in the same directory. --input-dist uniform is fixed workflow-wide; the golden is $WORK_DIR/golden.py used as-is — if it is missing, the task fails. Done when: result_smoke.csv holds exactly one row."
+      - "Phase 2 - adjudicate failed cases: rerun each row whose precision_status is not PASS with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml (third_party torch via the local xpu-server), writing to $WORK_DIR/op/tests/blackbox/ttk/result_smoke-crosscheck.csv; a case that passes under cross_check is adjudicated green; a case still failing enters precision localization and fix (wrong-precision class of the triage line + fix discipline) and is rerun until green. Skip this phase when phase 1 is all-green."
+      - "Gate script: run the parse_result.py script under the blackbox-tester skill on <result.csv> with --expect-total <N>; it exits 0 if and only if pass==total and fail==skip==0; for the negative suite add --negative — exit 0 if and only if pass==0 (every row rejected)."
+      - "Failure triage: reproduce each failure first with -t by case name, then load the skill for its class and record conclusions and fixes in the evidence file — build failure (build.sh error / no artifacts) -> ascendc-compile-debug; AIC Error, runtime crash, error codes (161xxx/361xxx/507xxx/561xxx), hang, timeout -> ascendc-runtime-debug; wrong precision -> ascendc-precision-debug (criteria: $WORK_DIR/design/Validation.md per-dtype rtol/atol); TTK-framework-level failure (malformed results / GOLDEN_FAILURE / OOM / killed) -> ttk-how-diagnose."
+      - "Fix discipline: reproduce before attributing; code fixes stay inside the out_of_scope whitelist; after any code change run cd $WORK_DIR/op && ./build.sh to rebuild and deploy into dev-package before rerunning; suite CSVs, golden.py, tolerances and isolation thresholds stay as-is; a failure that cannot be fixed without deviating from design stays red with its attribution (oracle/design defect)."
+      - "Operator-source proof: run the check_op_binpath.py script under the blackbox-tester skill on $WORK_DIR/op/tests/blackbox/ttk/smoke_debug.log with --optype <OpPascal> --expect-dir $WORK_DIR/dev-package/vendors/<OpPascal> --require. Done when: exit 0 — the tested kernel comes from this workflow's own deployment."
+    acceptance:
+      - "Gate: the first L0 case ends green in phase 1 (parse_result.py $WORK_DIR/op/tests/blackbox/ttk/result_smoke.csv --expect-total 1 exits 0) or is adjudicated green in phase 2 (parse_result.py $WORK_DIR/op/tests/blackbox/ttk/result_smoke-crosscheck.csv --expect-total 1 exits 0); a case still failing after cross_check goes through precision fix until green."
+      - "Suites ready: the three suite CSVs' data-row counts equal their standard layer CSVs; counts and oversized side-table counts recorded."
+      - "Operator source: check_op_binpath.py --require exits 0."
+    out_of_scope:
+      - "Modification whitelist: $WORK_DIR/op/op_host/ (host/tiling code) and $WORK_DIR/op/op_kernel/ (kernel code); everything else stays as-is — the TTK framework ($WORK_DIR/ops-test-kit), all case CSVs, $WORK_DIR/golden.py (never modify), tolerances and isolation thresholds, $WORK_DIR/design/ docs, whitebox case sets."
+      - "Run only the first L0 case; new files land only under $WORK_DIR/op/tests/blackbox/."
+    max_retries: 2
+    on_exhaust: exit
+  - id: blackbox-run-l0-100pct
+    task_type: normal
+    title: Full L0 blackbox suite - every case precision-PASS (hard gate)
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - blackbox-smoke
+    goal:
+      - "Run the full L0 test suite with the TTK framework, fixing issues until every case passes."
+    approach:
+      - "Locate the case CSV: $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv (the L0 suite frozen by blackbox-smoke; its data-row count is the --expect-total value)."
+      - "Locate the TTK framework root: $WORK_DIR/ops-test-kit; every ttk command runs from that directory."
+      - "Phase 1 - run the full suite without cross_check: python3 -m ttk aclnn -i $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv --pc=1 --task-prof false --run 1 --device-whitelist 0 --input-dist uniform --compare stat_rel_err --plugin $WORK_DIR/golden.py -o $WORK_DIR/op/tests/blackbox/ttk/result_l0.csv (local golden comparison only, no third_party). rm -f the result file before running; resumes and single-case reruns always via -t by name; the suite stays whole. Done when: result_l0.csv's case set equals the suite's full row set."
+      - "Phase 2 - adjudicate failed cases: rerun each row whose precision_status is not PASS with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml (third_party torch via the local xpu-server), writing to $WORK_DIR/op/tests/blackbox/ttk/result_l0-crosscheck.csv; a case that passes under cross_check is adjudicated green; a case still failing enters precision localization and fix (wrong-precision class of the triage line + fix discipline) and is rerun until green. Skip this phase when phase 1 is all-green."
+      - "Gate script: run the parse_result.py script under the blackbox-tester skill on <result.csv> with --expect-total <N>; it exits 0 if and only if pass==total and fail==skip==0; for the negative suite add --negative — exit 0 if and only if pass==0 (every row rejected)."
+      - "Failure triage: reproduce each failure first with -t by case name, then load the skill for its class and record conclusions and fixes in the evidence file — build failure (build.sh error / no artifacts) -> ascendc-compile-debug; AIC Error, runtime crash, error codes (161xxx/361xxx/507xxx/561xxx), hang, timeout -> ascendc-runtime-debug; wrong precision -> ascendc-precision-debug (criteria: $WORK_DIR/design/Validation.md per-dtype rtol/atol); TTK-framework-level failure (malformed results / GOLDEN_FAILURE / OOM / killed) -> ttk-how-diagnose."
+      - "Fix discipline: reproduce before attributing; code fixes stay inside the out_of_scope whitelist; after any code change run cd $WORK_DIR/op && ./build.sh to rebuild and deploy into dev-package before rerunning; suite CSVs, golden.py, tolerances and isolation thresholds stay as-is; a failure that cannot be fixed without deviating from design stays red with its attribution (oracle/design defect)."
+      - "Evidence: $WORK_DIR/op/tests/blackbox/ttk/run-l0-100pct.RECORD.md records the full row set, per-row results, fix history, and the commands run; gate numbers come from one clean full rerun after the last code change."
+    acceptance:
+      - "Gate: after adjudication every case in the suite is green — phase-1 PASS rows plus crosscheck-adjudicated rows together cover the full row set (all-green phase 1 is exactly parse_result.py $WORK_DIR/op/tests/blackbox/ttk/result_l0.csv --expect-total <L0 data-row count> exits 0; otherwise parse_result.py result_l0-crosscheck.csv --expect-total <phase-1 FAIL count> also exits 0 and the union covers the suite)."
+      - "Coverage: result_l0.csv's case set equals the suite's full row set, generated after the last build."
+      - "Build and evidence: cd $WORK_DIR/op && ./build.sh exits 0; run-l0-100pct.RECORD.md non-empty."
+    out_of_scope:
+      - "Modification whitelist: $WORK_DIR/op/op_host/ (host/tiling code) and $WORK_DIR/op/op_kernel/ (kernel code); everything else stays as-is — the TTK framework ($WORK_DIR/ops-test-kit), all case CSVs, $WORK_DIR/golden.py (never modify), tolerances and isolation thresholds, $WORK_DIR/design/ docs, whitebox case sets."
+      - "L1/L2 cases and performance stages belong to other tasks."
+    max_retries: 2
+    on_exhaust: exit
+  - id: blackbox-run-l1-100pct
+    task_type: normal
+    title: Full L1 blackbox suite in one run - every case precision-PASS (hard gate)
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - blackbox-run-l0-100pct
+    goal:
+      - "Run the full L1 test suite with the TTK framework, fixing issues until every case passes."
+    approach:
+      - "Locate the case CSV: $WORK_DIR/op/tests/blackbox/ttk/blackbox_l1.csv (the L1 suite frozen by blackbox-smoke; its data-row count is the --expect-total value)."
+      - "Locate the TTK framework root: $WORK_DIR/ops-test-kit; every ttk command runs from that directory."
+      - "Phase 1 - run the full suite in one go without cross_check: python3 -m ttk aclnn -i $WORK_DIR/op/tests/blackbox/ttk/blackbox_l1.csv --pc=1 --task-prof false --run 1 --device-whitelist 0 --input-dist uniform --compare stat_rel_err --plugin $WORK_DIR/golden.py -o $WORK_DIR/op/tests/blackbox/ttk/result_l1.csv (local golden comparison only, no third_party). rm -f the result file before running; resumes and single-case reruns always via -t by name; the suite stays whole, never staged or sampled. Done when: result_l1.csv's case set equals the suite's full row set."
+      - "Phase 2 - adjudicate failed cases: rerun each row whose precision_status is not PASS with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml (third_party torch via the local xpu-server), writing to $WORK_DIR/op/tests/blackbox/ttk/result_l1-crosscheck.csv; a case that passes under cross_check is adjudicated green; a case still failing enters precision localization and fix (wrong-precision class of the triage line + fix discipline) and is rerun until green. Skip this phase when phase 1 is all-green."
+      - "Gate script: run the parse_result.py script under the blackbox-tester skill on <result.csv> with --expect-total <N>; it exits 0 if and only if pass==total and fail==skip==0; for the negative suite add --negative — exit 0 if and only if pass==0 (every row rejected)."
+      - "Failure triage: reproduce each failure first with -t by case name, then load the skill for its class and record conclusions and fixes in the evidence file — build failure (build.sh error / no artifacts) -> ascendc-compile-debug; AIC Error, runtime crash, error codes (161xxx/361xxx/507xxx/561xxx), hang, timeout -> ascendc-runtime-debug; wrong precision -> ascendc-precision-debug (criteria: $WORK_DIR/design/Validation.md per-dtype rtol/atol); TTK-framework-level failure (malformed results / GOLDEN_FAILURE / OOM / killed) -> ttk-how-diagnose."
+      - "Fix discipline: reproduce before attributing; code fixes stay inside the out_of_scope whitelist; after any code change run cd $WORK_DIR/op && ./build.sh to rebuild and deploy into dev-package before rerunning; suite CSVs, golden.py, tolerances and isolation thresholds stay as-is; a failure that cannot be fixed without deviating from design stays red with its attribution (oracle/design defect)."
+      - "Evidence: $WORK_DIR/op/tests/blackbox/ttk/run-l1-100pct.RECORD.md records the full row set, per-row results, fix history, and the commands run; gate numbers come from one clean full rerun after the last code change; when this task changed code, result_l0.csv is rerun in full and still meets the L0 gate."
+    acceptance:
+      - "Gate: after adjudication every case in the suite is green — phase-1 PASS rows plus crosscheck-adjudicated rows together cover the full row set (all-green phase 1 is exactly parse_result.py $WORK_DIR/op/tests/blackbox/ttk/result_l1.csv --expect-total <L1 data-row count> exits 0; otherwise parse_result.py result_l1-crosscheck.csv --expect-total <phase-1 FAIL count> also exits 0 and the union covers the suite)."
+      - "Coverage: result_l1.csv's case set equals the suite's full row set, generated after the last build."
+      - "Build and evidence: cd $WORK_DIR/op && ./build.sh exits 0; run-l1-100pct.RECORD.md non-empty; if this task changed code, result_l0.csv was regenerated and still meets the L0 gate."
+    out_of_scope:
+      - "Modification whitelist: $WORK_DIR/op/op_host/ (host/tiling code) and $WORK_DIR/op/op_kernel/ (kernel code); everything else stays as-is — the TTK framework ($WORK_DIR/ops-test-kit), all case CSVs, $WORK_DIR/golden.py (never modify), tolerances and isolation thresholds, $WORK_DIR/design/ docs, whitebox case sets."
+      - "L2 cases and performance stages belong to other tasks; the L1 suite runs whole, never staged or sampled."
+    max_retries: 2
+    on_exhaust: exit
+  - id: blackbox-run-l2-100pct
+    task_type: normal
+    title: Full L2 negative blackbox suite in one run - every case rejected (closing gate)
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - blackbox-run-l1-100pct
+    goal:
+      - "Run the full L2 negative test suite with the TTK framework, fixing issues until every case is rejected by the operator."
+    approach:
+      - "Locate the case CSV: $WORK_DIR/op/tests/blackbox/ttk/blackbox_l2_neg.csv (the L2 negative suite frozen by blackbox-smoke; its data-row count is the --expect-total value)."
+      - "Locate the TTK framework root: $WORK_DIR/ops-test-kit; every ttk command runs from that directory."
+      - "Phase 1 - run the full suite in one go without cross_check: python3 -m ttk aclnn -i $WORK_DIR/op/tests/blackbox/ttk/blackbox_l2_neg.csv --pc=1 --task-prof false --run 1 --device-whitelist 0 --input-dist uniform --compare stat_rel_err --plugin $WORK_DIR/golden.py -o $WORK_DIR/op/tests/blackbox/ttk/result_l2.csv (local golden comparison only, no third_party). rm -f the result file before running; resumes and single-case reruns always via -t by name; the suite stays whole, never staged or sampled. Done when: result_l2.csv's case set equals the suite's full row set."
+      - "Phase 2 - adjudicate anomalous rows: rerun each row that is not cleanly REJECTED with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml (third_party torch via the local xpu-server), writing to $WORK_DIR/op/tests/blackbox/ttk/result_l2-crosscheck.csv; a row confirmed executing under cross_check means the operator lacks a validation (negative-semantics fix flow); a row still ambiguous is escalated per the triage line. Skip this phase when phase 1 rejects every row cleanly."
+      - "Negative semantics: rejected means passing. A row that precision-PASSes means the operator lacks a validation — add it in the whitelisted directories per the design docs and rerun; a row that is itself an illegal case stays red with its attribution."
+      - "Gate script: run the parse_result.py script under the blackbox-tester skill on <result.csv> with --expect-total <N>; it exits 0 if and only if pass==total and fail==skip==0; for the negative suite add --negative — exit 0 if and only if pass==0 (every row rejected)."
+      - "Failure triage: reproduce each failure first with -t by case name, then load the skill for its class and record conclusions and fixes in the evidence file — build failure (build.sh error / no artifacts) -> ascendc-compile-debug; AIC Error, runtime crash, error codes (161xxx/361xxx/507xxx/561xxx), hang, timeout -> ascendc-runtime-debug; wrong precision -> ascendc-precision-debug (criteria: $WORK_DIR/design/Validation.md per-dtype rtol/atol); TTK-framework-level failure (malformed results / GOLDEN_FAILURE / OOM / killed) -> ttk-how-diagnose."
+      - "Fix discipline: reproduce before attributing; code fixes stay inside the out_of_scope whitelist; after any code change run cd $WORK_DIR/op && ./build.sh to rebuild and deploy into dev-package before rerunning; suite CSVs, golden.py, tolerances and isolation thresholds stay as-is; a failure that cannot be fixed without deviating from design stays red with its attribution (oracle/design defect)."
+      - "Closing regression: when this task changed code, result_l0.csv and result_l1.csv are rerun in full and still meet their gates; the tiling UT (cd $WORK_DIR/op/tests/tiling && ./run.sh, 0 failed) and every whitebox branch full batch stay green under the same two-phase method (phase 1 --compare stat_rel_err without --config; failed rows adjudicated with --compare cross_check --config); record the evidence in $WORK_DIR/op/tests/blackbox/ttk/regression.RECORD.md."
+      - "Evidence: $WORK_DIR/op/tests/blackbox/ttk/run-l2-100pct.RECORD.md records the full row set, per-row rejection status, fixes and attributions, and the commands run."
+    acceptance:
+      - "Gate: parse_result.py $WORK_DIR/op/tests/blackbox/ttk/result_l2.csv --negative --expect-total <L2 data-row count> exits 0 (pass==0, every row rejected), with phase-2 adjudication evidence for any row that phase 1 did not reject cleanly."
+      - "Coverage: result_l2.csv's case set equals the suite's full row set, generated after the last build."
+      - "Closing regression: tiling UT and whitebox branch full batches stay green, regression.RECORD.md non-empty; if this task changed code, result_l0.csv and result_l1.csv were regenerated and still meet their gates."
+    out_of_scope:
+      - "Modification whitelist: $WORK_DIR/op/op_host/ (host/tiling code) and $WORK_DIR/op/op_kernel/ (kernel code); everything else stays as-is — the TTK framework ($WORK_DIR/ops-test-kit), all case CSVs, $WORK_DIR/golden.py (never modify), tolerances and isolation thresholds, $WORK_DIR/design/ docs, whitebox case sets."
+      - "Performance stages belong to other tasks; the L2 suite runs whole, never staged or sampled."
+    max_retries: 2
+    on_exhaust: continue
+  - id: geir-testcase-gen
+    task_type: normal
+    title: Validate and freeze the st-design kernel L0/L2 sources for GEIR
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Use the REG_OP/kernel L0/L2 CSVs already generated by ascendc-st-design under $WORK_DIR/op/tests/blackbox/kernel/testcases/ directly for TTK GEIR. Do not project ACLNN CSVs, copy cases, rename fields, redesign or sample."
+      - "Completion gate: both kernel source CSVs pass offline ttk geir --validate; baseline.json binds their original paths and hashes, the kernel factors, read-only prototype, golden and geir_spec.py."
+    approach:
+      - "Load geir-route-tester. Resolve OP_TYPE and the actual opInterface.value from the installed/generated ops-info; the kernel design must already emit that op_name and the REG_OP/OpDef attribute names. Incorrect CSV fields return to blackbox-gen for regeneration, never a prototype change."
+      - "Create geir_spec.py: python3 skills/geir-route-tester/scripts/build_geir_plugin.py --golden $WORK_DIR/golden.py --op-name <opInterface.value> --out $WORK_DIR/op/tests/geir/geir_spec.py. If GE and public golden names differ, add factual --attribute-alias GE_NAME=GOLDEN_NAME entries such as has_bias=hasBias; this only adapts the golden call."
+      - "From $WORK_DIR/ops-test-kit run python3 -m ttk geir -i <absolute kernel L0/L2 source CSV> --plugin $WORK_DIR/op/tests/geir/geir_spec.py --validate for each of the two sources. Check applicable rank-0 scalar/scalar and scalar/tensor coverage against the interface facts."
+      - "Freeze directly: python3 skills/geir-route-tester/scripts/verify_ttk_geir.py freeze --directory $WORK_DIR/op/tests/geir --cases $WORK_DIR/op/tests/blackbox/kernel/testcases --op-name <opInterface.value> --op-type <OP_TYPE> --proto $WORK_DIR/op/op_graph/<op_name>_proto.h --golden $WORK_DIR/golden.py --factors $WORK_DIR/op/tests/blackbox/kernel/design/02_test_factors.yaml."
+    acceptance:
+      - "geir_spec.py and baseline.json exist. Both source CSVs pass --validate; python3 skills/geir-route-tester/scripts/verify_ttk_geir.py check-frozen --directory $WORK_DIR/op/tests/geir exits 0."
+      - "baseline.json sources.positive and sources.negative point to the original kernel L0/L2; no intermediate GEIR CSVs are produced. Required scalar coverage is present; oversized side tables remain outside execution."
+    out_of_scope:
+      - "Offline only: no package build or install and no device execution. REG_OP, OpDef, kernel sources, public CSVs, golden and TTK stay unchanged."
+    depends_on:
+      - blackbox-gen
+      - update-opdef
+      - gen-golden
+    max_retries: 1
+    on_exhaust: exit
+  - id: geir-impl-smoke
+    task_type: normal
+    title: Develop the operator's GEIR graph-mode sources and smoke-run the first positive GEIR case
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Develop the graph-mode production sources for the operator in $WORK_DIR/spec/spec.yaml: $WORK_DIR/op/op_host/<op_name>_infershape.cpp implementing InferShape{OpType} registered as IMPL_OP_INFERSHAPE({OpType}).InferShape(InferShape{OpType}), $WORK_DIR/op/op_graph/<op_name>_graph_infer.cpp implementing InferDataTypeFor{OpType} registered as IMPL_OP({OpType}).InferDataType(InferDataTypeFor{OpType}) (InferFormat / InferShapeRange callbacks only when the operator's interface requires them). Existing REG_OP and OpDef interface declarations are read-only."
+      - "Completion gate (smoke): the package builds, the first case of the frozen kernel L0 executes via ttk geir under debug logging, and the run's plog proves the routing chain — vendor proto so scanned, REG_OP registered, and the developed InferShape / InferDataType callbacks registered. Precision is not a gate in this task."
+    approach:
+      - "Derive the names at runtime: <op_name> and {OpType} from $WORK_DIR/spec/spec.yaml op.name; the InferShape semantics come from $WORK_DIR/design/InferShapeDtype.md."
+      - "Preserve existing op_graph sources and all prototypes; modify only the necessary inference implementations and callback registration/build wiring."
+      - "Develop $WORK_DIR/op/op_host/<op_name>_infershape.cpp: the InferShape{OpType} function covering static shapes, dynamic shapes, and unknown rank, plus the IMPL_OP_INFERSHAPE({OpType}).InferShape(InferShape{OpType}) registration."
+      - "Develop $WORK_DIR/op/op_graph/<op_name>_graph_infer.cpp: InferDataTypeFor{OpType} with the IMPL_OP({OpType}).InferDataType(InferDataTypeFor{OpType}) registration; add InferFormat / InferShapeRange only when the operator's interface requires them."
+      - "Treat $WORK_DIR/op/op_graph/<op_name>_proto.h and OpDef interface declarations as read-only. Adapt tests at generation time; report genuine interface conflicts upstream without changing ports, attributes, types or defaults."
+      - "Build: cd $WORK_DIR/op && ./build.sh must exit 0; load the ascendc-build-system skill for any build-system question."
+      - "Smoke run with debug logging on, executed from $WORK_DIR/ops-test-kit: collect per the ascendc-plog-analysis skill's 采集速查 (ASCEND_GLOBAL_LOG_LEVEL=0) and make sure ASCEND_CUSTOM_OPP_PATH points at the current package install; take the first data row's testcase_name from <kernel L0 source from baseline.json>, then ASCEND_GLOBAL_LOG_LEVEL=0 python3 -m ttk geir -i <kernel L0 source from baseline.json> -t <first testcase_name> --plugin $WORK_DIR/op/tests/geir/geir_spec.py --compare stat_rel_err --pc=1 --device-whitelist 0 -c=false -d -b release -o $WORK_DIR/op/tests/geir/smoke_result.csv — the case must complete execution; its precision outcome is out of scope. On build or launch failure load the matching debug skill (ascendc-compile-debug / ascendc-runtime-debug), classifying the run's plog signals with the ascendc-plog-analysis parse script first; fixes land only in the three developed files and the build wiring."
+      - "Locate and parse the run's plog with the ascendc-plog-analysis skill: its parse script auto-finds the newest debug-level plog (or takes the file path), with --tail for large files; the pid in the plog filename is the GE C++ child process, not the ttk worker."
+      - "Confirm the routing chain in that plog, top-down — a missing layer localizes the problem to that layer or above: grep LoadOpsProtoSo and libcust_opsproto_rt2.0.so (vendor proto so scanned; missing means ASCEND_CUSTOM_OPP_PATH did not take effect — an environment problem, fix the env, not the operator code); grep 'RegisterOperatorCreator.*creator v2 for <Op>' (REG_OP landed in the factory); grep -F 'register OP_IMPL : [InferShape]' and grep -F 'register OP_IMPL : [InferDataType]' (the developed callbacks entered the registry); 'Verifying op.*failed' or 'Call InferShapeAndType.*failed' rows mean registration succeeded but the developed infer functions failed at execution — fix them and rerun the smoke."
+      - "Observe actual CallInferFunc routing first. V1/Runtime 1.0 produces a warning and continues testing; do not require a V2 execution probe for V1. For V2, verify staging callback selection per geir-route-tester; do not change the operator prototype to affect routing."
+      - "Evidence: record the developed file list, the executed case name, and the matched routing-chain log lines (with the plog filename) in the task report."
+    acceptance:
+      - "Existing REG_OP/OpDef prototype sources remain byte-identical; no source is removed merely to satisfy a file-name allowlist."
+      - "Registrations present: grep -q IMPL_OP_INFERSHAPE $WORK_DIR/op/op_host/*_infershape.cpp && grep -qE 'IMPL_OP\\(.+\\)\\.InferDataType' $WORK_DIR/op/op_graph/*_graph_infer.cpp && grep -q REG_OP $WORK_DIR/op/op_graph/*_proto.h — exit 0."
+      - "proto.h matches the design authority: every Input/Output/Attr name in $WORK_DIR/op/op_graph/*_proto.h's REG_OP appears, in the same order, as in the ## OpDef 代码片段 block of $WORK_DIR/design/Interface.md."
+      - "Build passes: cd $WORK_DIR/op && ./build.sh exits 0."
+      - "The smoke case executed: $WORK_DIR/op/tests/geir/smoke_result.csv exists and contains a row for kernel L0's first data-row testcase_name."
+      - "Routing chain proven in the smoke run's plog (newest debug-level plog by mtime): it contains the vendor proto-so scan line (GetFileListWithSuffix ... libcust_opsproto_rt2.0.so), the Register creator v2 line for this OpType, and the register OP_IMPL : [InferShape] and [InferDataType] lines for this OpType."
+      - "Actual route is recorded. V1 is warning-only; V2 meets the callback selection gate in geir-route-tester. Real execution errors and mixed/inconsistent routes still fail."
+      - "Frozen assets unchanged: GEIR_SKILL=skills/geir-route-tester; python3 $GEIR_SKILL/scripts/verify_ttk_geir.py check-frozen --directory $WORK_DIR/op/tests/geir exits 0."
+    out_of_scope:
+      - "Do not modify the frozen GEIR assets (the original kernel L0/L2 CSVs, geir_spec.py, baseline.json), the blackbox sources, golden.py, TTK, tolerances, or design docs."
+      - "Write only inference implementations and necessary registration/build wiring; REG_OP/OpDef prototypes and all frozen sources remain unchanged."
+      - "Smoke scope: one positive case only — no full-suite runs, no negative suite, and precision results are recorded as-is, not fixed."
+    depends_on:
+      - geir-testcase-gen
+      - kernel-impl
+      - blackbox-smoke
+    max_retries: 2
+    on_exhaust: exit
+  - id: geir-run-100pct
+    task_type: normal
+    title: Full GEIR L0/L2 suite verification
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Run the frozen GEIR suites in full via ttk geir for the operator in $WORK_DIR/spec/spec.yaml: kernel L0 (L0) across all four flag combinations — source static, source dynamic, binary static, binary dynamic — and kernel L2 (L2) across the two source combinations, under the two-phase execution contract: phase 1 with --compare stat_rel_err, failed positive rows rerun with --compare cross_check for adjudication, rows still failing after adjudication enter localization."
+      - "Completion gate: after adjudication every positive row is green in all four combinations, every negative row is rejected in both source combinations ; V1 emits a warning and does not waive actual rejection failures, and the frozen GEIR assets stay unchanged."
+    approach:
+      - "Locate kernel L0/L2 sources through $WORK_DIR/op/tests/geir/baseline.json sources.positive/negative.path; use these paths directly in every ttk geir -i invocation. geir_spec.py is frozen; run TTK from $WORK_DIR/ops-test-kit."
+      - "Command template — every ttk geir invocation is this skeleton with only the bracketed slots substituted: source $WORK_DIR/dev-package/vendors/<OpPascal>/bin/set_env.bash && export ASCEND_GLOBAL_LOG_LEVEL=0 && cd $WORK_DIR/ops-test-kit && rm -f <result.csv> && python3 -m ttk geir -i <kernel source CSV from baseline.json> -o <result.csv> [-t <testcase_name>] --plugin $WORK_DIR/op/tests/geir/geir_spec.py --pc=1 --device-whitelist 0 --compare stat_rel_err [<flags>]. [<flags>] by combination: src-static '-c=true -d=false -b=false', src-dyn '-c=false -d=true -b=false', bin-static '-c=true -d=false -b=release', bin-dyn '-c=false -d=true -b=release'. Variants: the negative suite adds --golden-mode Disable; phase-2 adjudication replaces the compare tail with '--compare cross_check --config $WORK_DIR/ttk.conf.yaml'. The set_env.bash prefix is required — it exports ASCEND_CUSTOM_OPP_PATH to the installed vendor package."
+      - "Dump artifacts: a single-case rerun may add --dump full; the binaries land in $WORK_DIR/ops-test-kit/ (the ttk run directory) as <testcase_name>_geir_input_<i>.bin, _geir_output_<i>.bin and _geir_golden_<i>.bin — the golden dump is upcast to float32 (twice the fp16 byte count), outputs keep the declared dtype — and per-case stderr accumulates in $WORK_DIR/ops-test-kit/ttk-compare.log."
+      - "Phase 1 - run the positive suite in full, one run per flag combination, each writing its own result CSV (-o $WORK_DIR/op/tests/geir/result_pos_<combo>.csv with <combo> in src-static / src-dyn / bin-static / bin-dyn) on the command template with --compare stat_rel_err and no --config — local golden comparison only, no third_party. rm -f the result file before each run; resumes and single-case reruns always via -t by name; the suite stays whole, never staged or sampled."
+      - "Phase 1 - run the negative suite in full, source static and source dynamic only, adding --golden-mode Disable, with the same --compare stat_rel_err / no --config form, writing result_neg_<combo>.csv; rejected is the green state for every row."
+      - "Phase 2 - adjudication: rerun every positive row whose result is not PASS with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml, writing result_pos_<combo>-crosscheck.csv; a row that passes under cross_check is adjudicated green for that combination; skip phase 2 for an all-green combination."
+      - "Negative semantics: rejected means passing. A negative row that executes or precision-PASSes means a missing validation in the GEIR deliverables — add the check in the developed files and rerun; a row that is itself an illegal case stays red with its attribution."
+      - "InferShapeFuncV1: warn, record the actual route and continue all tests. Callback origin remains unverified for V1. Do not modify prototypes or dispatch to silence the warning; actual positive failures or non-rejected negative cases remain failures."
+      - "Localization for rows still failing after adjudication: classify the run's plog signals with the ascendc-plog-analysis parse script first, collect with debug logging per that skill when the routing chain is in question, then load the debug skill for the class (ascendc-compile-debug / ascendc-runtime-debug / ascendc-precision-debug); fixes land only in the GEIR deliverables — the op_graph graph-infer source, the op_host infershape source, and the build wiring; failures rooted in kernel or tiling code are reported with attribution, not fixed here."
+      - "Fix discipline: reproduce before attributing; after any code change run cd $WORK_DIR/op && ./build.sh and rerun the whole affected suite; frozen assets, golden.py, and tolerances stay as-is."
+      - "Evidence: $WORK_DIR/op/tests/geir/run-100pct.RECORD.md records per-combination row accounting, per-row results, the crosscheck adjudication set, fix history, and the commands run; gate numbers come from one clean full rerun after the last code change."
+    acceptance:
+      - "All six result CSVs exist and are non-empty (result_pos_{src-static,src-dyn,bin-static,bin-dyn}.csv, result_neg_{src-static,src-dyn}.csv under $WORK_DIR/op/tests/geir/), and each covers its frozen suite's full row set."
+      - "Positive gate: for every combination, the union of phase-1 PASS rows and crosscheck-adjudicated rows covers kernel L0's full row set (verified by parsing result_pos_<combo>.csv plus result_pos_<combo>-crosscheck.csv when present)."
+      - "Negative gate: every row in both negative results is rejected, with EXEC_FAILURE and precision_status starting with ERROR:. V1 itself is warning-only and never converts a non-rejected case to green."
+      - "Frozen assets unchanged: GEIR_SKILL=skills/geir-route-tester; python3 $GEIR_SKILL/scripts/verify_ttk_geir.py check-frozen --directory $WORK_DIR/op/tests/geir exits 0."
+      - "Build passes after the last change: cd $WORK_DIR/op && ./build.sh exits 0."
+      - "Evidence: run-100pct.RECORD.md is non-empty and its per-combination totals match the result CSVs."
+    out_of_scope:
+      - "Do not modify the frozen GEIR assets (the original kernel L0/L2 CSVs, geir_spec.py, baseline.json), golden.py, the blackbox sources, TTK, tolerances, or design docs."
+      - "Fix scope: only the GEIR deliverables (op_graph/<op_name>_graph_infer.cpp, op_host/<op_name>_infershape.cpp) and the package build wiring; everything else under $WORK_DIR/op/ stays as-is."
+      - "The suites run whole, never staged or sampled."
+    depends_on:
+      - geir-impl-smoke
+      - blackbox-run-l1-100pct
+    max_retries: 2
+    on_exhaust: exit
+  - id: aclnn-impl-smoke
+    task_type: normal
+    title: Hand-written ACLNN smoke - replace the autogen stub with l0op-style op_api, package aclnn harness stays green
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - kernel-impl
+    goal:
+      - "Replace the op_build autogen ACLNN stub of the package at $WORK_DIR/op/ with a hand-written l0op-style op_api — the four files under $WORK_DIR/op/op_api/ (aclnn_<op_name>.h / aclnn_<op_name>.cpp for L2, <op_name>.h / <op_name>.cpp for L0) plus the CMake wiring — by executing the develop-hand-written-aclnn skill (skills/develop-hand-written-aclnn/SKILL.md)."
+      - "Completion gate: the skill's green-gate checks 1-3 pass (build exits 0, both aclnn<OpPascal> symbols exported from the dev-package library, the installed public header is byte-identical to the handwritten one), the autogen stub is no longer a compile source, and the package's own ACLNN test harness under $WORK_DIR/op/tests/aclnn/ runs green through the handwritten API (regression) — run.sh and CMakeLists.txt stay frozen as setup-op-package wrote them, while test_aclnn.cpp receives the one whitelisted signature refresh to the autogen-signature contract that update-opdef left stale (its out_of_scope defers that update to this task)."
+    approach:
+      - "Load the develop-hand-written-aclnn skill first (mandatory — it is the single execution authority for the handwritten ACLNN development; do not restate or bypass its step procedure); execute its steps 1-5 in order until its green gate passes. The package you operate on is $WORK_DIR/op/ (kernel and op_host are done; the ACLNN API is currently the op_build autogen stub compiled into libcust_opapi.so)."
+      - "Workflow overlays on the skill (where an overlay and the skill differ, the overlay wins): the operator identity comes from $WORK_DIR/spec/spec.yaml (op.name -> <op_name>, capitalized words -> <OpPascal>); the install root is $WORK_DIR/dev-package/vendors/<OpPascal>/ (build via cd $WORK_DIR/op && ./build.sh, which already installs there); the fact-sheet read of build/autogen/aclnn_*.h is the authoritative L2 signature contract — copy it verbatim, callers and test CSVs were built against it."
+      - "Modification whitelist for this task: $WORK_DIR/op/op_api/ (the four new files), $WORK_DIR/op/CMakeLists.txt (the skill's four wiring edits), and exactly one signature refresh of $WORK_DIR/op/tests/aclnn/test_aclnn.cpp to the autogen-signature contract in $WORK_DIR/op/build/autogen/aclnn_<op_name>.h (update-opdef declared this test stale after the interface change and deferred its update to this task). Nothing else — in particular op_host/ and op_kernel/ sources stay as-is (their behavior is already gated by the blackbox tasks), and tests/aclnn/run.sh and tests/aclnn/CMakeLists.txt stay byte-identical to their setup-op-package state."
+      - "Regression overlay (skill check 4 replacement — the workflow's evidence route is the package's own aclnn harness under $WORK_DIR/op/tests/aclnn/: run.sh and CMakeLists.txt frozen as setup-op-package wrote them, test_aclnn.cpp refreshed once under the whitelist to call the autogen-signature contract): cd $WORK_DIR/op/tests/aclnn && ./run.sh must exit 0 with every case green (no FAILED row in its log); a red case is reproduced first, classified (build failure -> ascendc-compile-debug; AIC error / runtime crash / error codes -> ascendc-runtime-debug; wrong precision -> ascendc-precision-debug), and fixed inside the whitelist until green."
+      - "Evidence: record the four delivered file paths, the skill green-gate results (build exit, nm symbol lines, header diff), the CMake edits applied, and the regression case name + result in the task report."
+    acceptance:
+      - "Four files delivered: OP_SNAKE=$(python3 -c \"import yaml; print(yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name'])\") ; test -f $WORK_DIR/op/op_api/aclnn_${OP_SNAKE}.h && test -f $WORK_DIR/op/op_api/aclnn_${OP_SNAKE}.cpp && test -f $WORK_DIR/op/op_api/${OP_SNAKE}.h && test -f $WORK_DIR/op/op_api/${OP_SNAKE}.cpp."
+      - "Build and symbols: cd $WORK_DIR/op && ./build.sh exits 0, and nm -D $WORK_DIR/dev-package/vendors/<OpPascal>/op_api/lib/libcust_opapi.so | grep -cE ' T aclnn<OpPascal>(GetWorkspaceSize)?$' equals 2."
+      - "Handwritten sources actually compiled: the autogen stub is empty and unreferenced — test $(wc -c < $WORK_DIR/op/build/autogen/aclnn_<op_name>.cpp) -eq 0 and ! grep -n 'autogen/aclnn_<op_name>.cpp' $WORK_DIR/op/CMakeLists.txt shows it only as the COPYONLY destination."
+      - "Installed header is the handwritten one: diff $WORK_DIR/op/op_api/aclnn_<op_name>.h $WORK_DIR/dev-package/vendors/<OpPascal>/op_api/include/aclnn_<op_name>.h exits 0, and its two declarations match the pre-task autogen contract (verifier cross-checks against the blackbox CSVs' api_name and the torch task's signature source)."
+      - "Regression green: cd $WORK_DIR/op/tests/aclnn && ./run.sh exits 0 and its log holds no FAILED row; the harness frame is frozen — $WORK_DIR/op/tests/aclnn/run.sh and $WORK_DIR/op/tests/aclnn/CMakeLists.txt are byte-identical to their setup-op-package end state (verifier diffs them); and the refreshed $WORK_DIR/op/tests/aclnn/test_aclnn.cpp calls aclnn<OpPascal>GetWorkspaceSize with the exact parameter list of the installed autogen-contract header (verifier cross-checks the call site's argument count and order against $WORK_DIR/dev-package/vendors/<OpPascal>/op_api/include/aclnn_<op_name>.h). verify.log is updated by this run."
+    out_of_scope:
+      - "Write only under $WORK_DIR/op/op_api/ and edit only $WORK_DIR/op/CMakeLists.txt for the four wiring edits; additionally, $WORK_DIR/op/tests/aclnn/test_aclnn.cpp may be updated once, only to match the autogen-signature contract (the update update-opdef deferred to this task) — tests/aclnn/run.sh and tests/aclnn/CMakeLists.txt stay frozen as setup-op-package wrote them; everything else under $WORK_DIR/op/ stays as-is."
+      - "Do not modify the blackbox suite CSVs, $WORK_DIR/golden.py, tolerances, design docs, the TTK framework, or any other task's frozen assets."
+      - "Do not change the L2 signature contract: the public API keeps the autogen header's parameter list verbatim."
+    max_retries: 2
+    on_exhaust: exit
+  - id: torch-impl-smoke
+    task_type: normal
+    title: Torch integration smoke - execute the torch-adapter skill; five-file adapter; all four e2e modes precision-PASS (hard gate)
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Deliver the pure-Python torch integration of the operator in $WORK_DIR/spec/spec.yaml by executing the torch-adapter skill (skills/torch-adapter/SKILL.md): five tracked files under $WORK_DIR/op/tests/torch/ — <op_name>_op.py, custom/__init__.py, e2e_plugin.py, e2e_<op_name>.csv, run.sh."
+      - "Completion gate: bash $WORK_DIR/op/tests/torch/run.sh exits 0, and both result CSVs show precision_status=PASS for every case in every executed mode with the vendor kernel name <OpPascal> in the kernel_details columns. eager/static/dynamic land in one pass (-c -d --fullgraph 1) and aclgraph in a second (--aclgraph); ttk skips eager under --aclgraph by design, so NO_OUTPUT eager cells in the aclgraph result are expected. precision IS gated here because no later task gates the torch layer."
+    approach:
+      - "Load the procedure source: read skills/torch-adapter/SKILL.md end-to-end, then its references/torch-adapter-guide.md and template/ as the steps direct. Follow the skill's steps 0-5 verbatim; the remaining bullets are workflow overlays (input mapping, golden source, case projection, config). Where an overlay and the skill differ, the overlay wins."
+      - "Map the step-0 inputs: <op_name> from $WORK_DIR/spec/spec.yaml op.name; <OpPascal> by capitalising each snake word; RUN-package vendor root = $WORK_DIR/dev-package/vendors/<OpPascal> (outside the default opp, so ASCEND_CUSTOM_OPP_PATH points at it before torch_npu loads — guide §1); TTK path = $WORK_DIR/ops-test-kit; aclnn signatures from the vendor's op_api/include/ header; operator semantics from the frozen $WORK_DIR/golden.py."
+      - "Golden overlay (replaces the skill's golden.py authoring): e2e_plugin.py imports $WORK_DIR/golden.py and defines a torch-layer spec that inherits the frozen golden function verbatim but clears the tolerance attribute so the default stat_rel_err standard applies — no cross_check, no third_party, no xpu server; map __spec__ = {'torch.ops.custom.<op_name>': '<wrapper class>'}. Deliverable set stays five files; a local golden.py is absent. Any torch_graph need (scalar int attributes, guide §6) goes into the plugin module."
+      - "Project e2e_<op_name>.csv (replaces the skill's free case matrix): exactly one data row per dtype declared in spec.yaml; derive each row from a row of $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv (shapes, dtypes, formats, attributes copied; api_name = torch.ops.custom.<op_name>); prefer distinct attribute branches across rows. Column rules per guide §8. Gate every projected row with a graph-feasibility repro BEFORE the full run: a minimal torchair static compile (torch.compile(fullgraph=True, backend=npu_backend) on the projected shape+attributes) exits 0; a row that runs eager but fails the repro (E20001/IsOpParameterValid — guide §7: the vendor kernel's GE pre-compile accepts fewer ranks/shapes than the aclnn runtime) is not torch-suite material, pick another blackbox_l0 row instead (prefer rank <= 4). Set input_data_ranges per the skill template defaults so squared inputs stay representable in the input dtype (fp16 ranges >= 1e-3). Record the row-to-source mapping in the report."
+      - "Run via run.sh with TTK_HOME=$WORK_DIR/ops-test-kit; both ttk passes run WITHOUT --config (default stat_rel_err — no xpu server involved); rm -f each -o target before its run."
+      - "Triage per guide §7 first; workflow attribution rule on top: precision FAIL that is also red in the blackbox pathway on the same shape is a kernel defect — record the attribution and stop; every other fix lands only in the five torch files."
+      - "Evidence: the report records the five file paths, the CSV row-to-blackbox mapping, the executed commands, the per-mode precision cells and kernel_details excerpts from both result CSVs, and the self-check output tail."
+    acceptance:
+      - "Deliverable set: <op_name>_op.py, custom/__init__.py, e2e_plugin.py, e2e_<op_name>.csv, run.sh exist under $WORK_DIR/op/tests/torch/, and python3 -c \"from pathlib import Path; allowed={'<op_name>_op.py','__init__.py','e2e_plugin.py','e2e_<op_name>.csv','run.sh'}; extra=[p.name for p in Path('$WORK_DIR/op/tests/torch').rglob('*') if p.is_file() and p.parent.name!='__pycache__' and p.suffix!='.pyc' and p.name not in allowed and not p.name.startswith('result_e2e_')]; assert not extra, extra\" exits 0."
+      - "Schema faithful: python3 introspecting torch.ops.custom.<op_name>.default._schema after PYTHONPATH=$WORK_DIR/op/tests/torch python3 -c \"import custom\" asserts the parameter names and order match the spec.yaml interface (tensors in declaration order, then attributes) and the return count equals the interface output count."
+      - "Registration proven in a fresh process: PYTHONPATH=$WORK_DIR/op/tests/torch python3 -c \"import custom, torch; torch.ops.custom.<op_name>\" exits 0."
+      - "Golden re-exported, not reimplemented: e2e_plugin.py imports the spec class from $WORK_DIR/golden.py (assert the import line names golden) and no golden.py exists under $WORK_DIR/op/tests/torch/."
+      - "Projection faithful: python3 with csv.DictReader asserts e2e_<op_name>.csv holds exactly one data row per dtype declared in spec.yaml with matching dtype values, every api_name equals torch.ops.custom.<op_name>, and per the report's mapping each row's tensor_view_shapes/attributes trace to a blackbox_l0.csv source row."
+      - "Own-package binding: importing <op_name>_op yields a libcust_opapi path under dev-package/vendors/<OpPascal>/op_api/lib/ (assert on the module's path constant); the successful CDLL of that path is the binding proof."
+      - "Master gate: bash $WORK_DIR/op/tests/torch/run.sh exits 0 — it chains the module self-check (ALL CHECKS PASSED) and both ttk passes."
+      - "Four modes proven: parsing result_e2e_eager_static_dynamic.csv shows eager_precision, graph_cst_precision, graph_dyn_precision all PASS for every case with <OpPascal> present in the matching kernel_details columns; result_e2e_aclgraph.csv shows graph_aclgraph_precision PASS with the kernel name, and its eager cells are NO_OUTPUT by design."
+      - "Frozen assets unchanged: $WORK_DIR/op/tests/blackbox/ and $WORK_DIR/op/tests/geir/ contents, golden.py, and spec.yaml are unmodified (verifier checks against the pre-task snapshot)."
+    out_of_scope:
+      - "Fixes land only in the five torch files and the run artifacts under $WORK_DIR/op/tests/torch/; spec, design docs, op package sources, blackbox and geir frozen assets, golden.py, TTK, and tolerances stay as-is."
+      - "Kernel-precision defects are attributed in the report and left to the kernel tasks; this task never edits op package sources."
+      - "Smoke scope: one case per declared dtype across the four modes — no full L0 projection, no extra cases, no precision adjudication reruns."
+    depends_on:
+      - geir-impl-smoke
+      - aclnn-impl-smoke
+      - blackbox-smoke
+      - setup-xpu-server
+      - gen-golden
+    max_retries: 2
+    on_exhaust: exit
+  - id: doc-gen
+    task_type: normal
+    title: Generate the operator docs under $WORK_DIR/docs/ (aclnn API doc + linked README) and pass the paired-docs validator
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Execute the ascendc-docs-gen skill for the finished operator package at $WORK_DIR/op: generate the paired public docs — the aclnn API interface doc $WORK_DIR/op/docs/aclnn{OperatorName}.md first, then $WORK_DIR/op/README.md linking it (README delivery mode fixed to full; the package ships real kernel source) — and expose both under $WORK_DIR/docs/."
+      - "{OperatorName} is the actual public interface family name aclnn<OpPascal> (<OpPascal> derived from $WORK_DIR/spec/spec.yaml op.name), confirmed against the hand-written public header $WORK_DIR/op/op_api/aclnn_<op_name>.h — never guessed from directory names."
+      - "Completion gate: the deterministic paired-docs validator passes — python3 $WORK_DIR/.agents/skills/ascendc-docs-gen/scripts/validate_operator_docs.py --operator-dir $WORK_DIR/op exits 0 with STATUS: PASSED as its last output line."
+    approach:
+      - "Load the ascendc-docs-gen skill first (mandatory — it is the single execution authority for doc structure, evidence sourcing, community-template fetching, and the paired delivery order); run as agents/docs-writer.md."
+      - "Workflow overlays on the agent/skill docs (where an overlay differs, the overlay wins): the operator root is $WORK_DIR/op (not operators/{OP}_package); the fact inputs are $WORK_DIR/spec/spec.yaml, $WORK_DIR/requirements/REQUIREMENTS.md, $WORK_DIR/design/*.md, the package sources under $WORK_DIR/op/ (op_host/, op_kernel/, op_graph/, op_api/, CMakeLists.txt, build.sh), the installed public header under $WORK_DIR/dev-package/vendors/<OpPascal>/op_api/include/, and the reproducible verification results under $WORK_DIR/op/tests/ (not the docs/{OP}/... layout the agent doc shows)."
+      - "The validator requires the docs inside the operator root: write $WORK_DIR/op/docs/aclnn{OperatorName}.md and overwrite the sample-derived $WORK_DIR/op/README.md. Once they validate, expose them at the workflow-level path: ln -sfn op/docs $WORK_DIR/docs ($WORK_DIR/docs exists only as this symlink)."
+      - "Iterate until green: on non-zero exit or a last line other than STATUS: PASSED, fix per the validator's ERROR list from verifiable facts and rerun."
+      - "Do not append to any LOG file and do not reply DONE — logging is the workflow runner's job; follow this task prompt's reply protocol."
+    acceptance:
+      - "OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; test -s $WORK_DIR/op/docs/aclnn${OP_PASCAL}.md && test -s $WORK_DIR/op/README.md && test -s $WORK_DIR/docs/aclnn${OP_PASCAL}.md."
+      - "Paired validation passes: python3 $WORK_DIR/.agents/skills/ascendc-docs-gen/scripts/validate_operator_docs.py --operator-dir $WORK_DIR/op > /tmp/doc-gen-validate.log 2>&1 exits 0 and tail -1 /tmp/doc-gen-validate.log is exactly STATUS: PASSED."
+      - "README links the doc it ships with: grep -qF \"docs/aclnn${OP_PASCAL}.md\" $WORK_DIR/op/README.md."
+    out_of_scope:
+      - "Write only $WORK_DIR/op/docs/, $WORK_DIR/op/README.md, and the $WORK_DIR/docs symlink; do not modify package sources, tests, CMake, $WORK_DIR/spec/, $WORK_DIR/design/, $WORK_DIR/requirements/, or $WORK_DIR/dev-package/."
+      - "Do not change the public aclnn signature or any package source to make documentation easier; the docs document the existing interface."
+    depends_on:
+      - torch-impl-smoke
+      - blackbox-run-l0-100pct
+      - blackbox-run-l1-100pct
+      - blackbox-run-l2-100pct
+      - geir-run-100pct
+    max_retries: 2
+    on_exhaust: exit
+  - id: code-review
+    task_type: normal
+    title: Review the finished operator code and record the findings under $WORK_DIR/code-review/
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Review the finished operator sources under $WORK_DIR/op/ (op_host/ and op_graph/ as the Host side, op_kernel/ as the Kernel side, op_api/ as the aclnn layer) exactly per the scope defined in agents/code-reviewer.md — every applicable TOPK, security-redline (plus SIMT kernel redlines when SIMT code is present), and performance clause of the ascendc-code-review skill — and write the aggregated report to $WORK_DIR/code-review/CODE_REVIEW.md."
+      - "Completion gate: the report exists and is internally consistent — the first-line status matches the FAIL finding count, every finding carries a unique ID with file:line evidence that resolves under $WORK_DIR/op/, and the four deterministic ops-impl-review script logs are saved under $WORK_DIR/code-review/checks/. This task is explicitly NOT gated on zero findings: findings are recorded for the downstream fix-findings task, never fixed here."
+    approach:
+      - "Run as agents/code-reviewer.md with this workflow's path overlay (the overlay wins over the agent doc's defaults): the review inputs are $WORK_DIR/op/op_host/, $WORK_DIR/op/op_graph/, $WORK_DIR/op/op_kernel/, and $WORK_DIR/op/op_api/ instead of operators/{OP}_package/*; the report lands at $WORK_DIR/code-review/CODE_REVIEW.md instead of the agent doc's default location."
+      - "Load the ascendc-code-review skill first (mandatory) and run its file-review workflow end to end (rule routing, per-clause review, line verification); every FAIL / SUSPICIOUS finding keeps its unique F / S ID, full file path, and line-verified line number."
+      - "Load the ops-impl-review skill and run its four deterministic scripts over the package, saving each full output to $WORK_DIR/code-review/checks/<script_name>.log: scalar_mainchain_check, vf_reachability_check, and non3510_scaffold_check against $WORK_DIR/op, and workspace_consistency_check with the design root $WORK_DIR (branch designs at $WORK_DIR/design/branches/) and the package root $WORK_DIR/op."
+      - "Fold the deterministic results into the report: a script verdict of FAIL (exit 2) becomes at least one FAIL finding citing the offending location from its log; INCONCLUSIVE (exit 1) is recorded as a SUSPICIOUS finding; PASS contributes no finding."
+    acceptance:
+      - "test -s $WORK_DIR/code-review/CODE_REVIEW.md exits 0, and the four deterministic logs exist non-empty: for s in scalar_mainchain_check vf_reachability_check workspace_consistency_check non3510_scaffold_check; do test -s $WORK_DIR/code-review/checks/$s.log || exit 1; done."
+      - "The report's first line is a single status that matches its body: head -1 $WORK_DIR/code-review/CODE_REVIEW.md | grep -qE '^\\*\\*状态\\*\\*:[[:space:]]*(✅通过|❌失败)[[:space:]]*$' exits 0, and it is ❌失败 exactly when at least one FAIL finding is listed (verifier cross-checks the finding list)."
+      - "Every finding is re-checkable: each finding entry carries a unique ID, a severity, and a file path with line number that resolves under $WORK_DIR/op/ (verifier spot-checks); no finding lacks evidence."
+    out_of_scope:
+      - "Read-only over the code under review: do not modify anything under $WORK_DIR/op/, $WORK_DIR/design/, $WORK_DIR/spec/, the test suites, $WORK_DIR/golden.py, or tolerances."
+      - "Do not fix any finding — remediation belongs to the downstream fix-findings task; write only under $WORK_DIR/code-review/ and run no builds or TTK batches."
+    depends_on:
+      - doc-gen
+    max_retries: 2
+    on_exhaust: exit
+  - id: fix-findings
+    task_type: normal
+    title: Fix every code-review finding and re-run the affected test gates green
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Close every FAIL finding recorded in $WORK_DIR/code-review/CODE_REVIEW.md by fixing the operator sources, then re-run every test gate the touched code feeds and leave it green; record each closure in $WORK_DIR/code-review/CODE_REVIEW_FIX.md."
+      - "When the review recorded zero FAIL findings, change no code and only write the no-op record to $WORK_DIR/code-review/CODE_REVIEW_FIX.md."
+      - "Completion gate: every FAIL finding ID from CODE_REVIEW.md is quoted and closed in CODE_REVIEW_FIX.md, and the regression gates below hold — or the zero-findings no-op is recorded."
+    approach:
+      - "Inventory: read $WORK_DIR/code-review/CODE_REVIEW.md and its checks/ logs; list every FAIL finding (ID, location, required fix). Zero FAIL findings -> write the no-op record and stop."
+      - "Fix discipline: confirm each finding at its cited location before editing; fixes land only in $WORK_DIR/op/op_host/, $WORK_DIR/op/op_kernel/, $WORK_DIR/op/op_api/, $WORK_DIR/op/op_graph/, and $WORK_DIR/op/CMakeLists.txt; after any code change run cd $WORK_DIR/op && ./build.sh (exit 0, deploys into $WORK_DIR/dev-package/) before any test re-run, and rebuild after every subsequent fix."
+      - "Relevant tests = every gate fed by the whitelisted sources. Re-run each with the exact command form its gate node already recorded in its own evidence files (the run-*.RECORD.md / regression.RECORD.md under $WORK_DIR/op/tests/):"
+      - "Package build: cd $WORK_DIR/op && ./build.sh exits 0."
+      - "Tiling UT: cd $WORK_DIR/op/tests/tiling && ./run.sh exits 0 with 0 failed; the pinned oracle files (test_tiling_gtest.cpp, CMakeLists.txt, run.sh) stay untouched."
+      - "Whitebox branch full batches: for every $WORK_DIR/op/tests/whitebox/branch-*/, re-run the full batch under the two-phase method (phase 1 --compare stat_rel_err without --config; failed rows adjudicated with -t by name adding --compare cross_check --config $WORK_DIR/ttk.conf.yaml); every row green."
+      - "Blackbox suites: blackbox_l0.csv / blackbox_l1.csv / blackbox_l2_neg.csv re-run in full from $WORK_DIR/ops-test-kit per the commands recorded in their run-l{0,1,2}-100pct.RECORD.md files; failed positive rows adjudicated via cross_check exactly as those nodes define."
+      - "GEIR: re-run all six combinations per the command template recorded in $WORK_DIR/op/tests/geir/run-100pct.RECORD.md; the frozen assets must still pass check-frozen afterwards."
+      - "ACLNN harness and torch e2e: cd $WORK_DIR/op/tests/aclnn && ./run.sh and bash $WORK_DIR/op/tests/torch/run.sh both exit 0 with no FAILED row."
+      - "Evidence: write $WORK_DIR/code-review/CODE_REVIEW_FIX.md quoting each FAIL finding verbatim with its fix and the per-gate rerun results (commands + outcome); append regression evidence to $WORK_DIR/op/tests/blackbox/ttk/regression.RECORD.md without overwriting it."
+    acceptance:
+      - "test -s $WORK_DIR/code-review/CODE_REVIEW_FIX.md exits 0; every FAIL finding ID listed in $WORK_DIR/code-review/CODE_REVIEW.md appears in CODE_REVIEW_FIX.md (verifier cross-checks the IDs one by one); the zero-findings case is explicitly recorded as a no-op with no code modified."
+      - "cd $WORK_DIR/op && ./build.sh exits 0."
+      - "Tiling UT green: cd $WORK_DIR/op/tests/tiling && ./run.sh exits 0 and its log shows [  PASSED  ] with no [  FAILED  ] line."
+      - "Blackbox gates hold on regenerated results: the blackbox-tester skill's parse_result.py on $WORK_DIR/op/tests/blackbox/ttk/result_l0.csv --expect-total <L0 data-row count> exits 0, likewise for result_l1.csv, and for result_l2.csv with --negative."
+      - "GEIR gates hold: the six result CSVs (result_pos_{src-static,src-dyn,bin-static,bin-dyn}.csv, result_neg_{src-static,src-dyn}.csv) exist non-empty and cover their frozen suites' full row sets, and python3 $WORK_DIR/.agents/skills/geir-route-tester/scripts/verify_ttk_geir.py check-frozen --directory $WORK_DIR/op/tests/geir exits 0."
+      - "Harness gates: cd $WORK_DIR/op/tests/aclnn && ./run.sh exits 0, and bash $WORK_DIR/op/tests/torch/run.sh exits 0."
+      - "Frozen assets unchanged: every case CSV, $WORK_DIR/golden.py, tolerances, isolation thresholds, the tiling UT oracle files, and $WORK_DIR/design/ docs are unmodified (verifier checks against the pre-task state); a finding that cannot be fixed without deviating from design stays open in CODE_REVIEW_FIX.md with its attribution instead."
+    out_of_scope:
+      - "Modification whitelist: $WORK_DIR/op/op_host/, op_kernel/, op_api/, op_graph/, CMakeLists.txt, plus the build/test artifacts the gates regenerate and CODE_REVIEW_FIX.md; everything else stays as-is."
+      - "Never modify test cases, suite CSVs, golden.py, tolerances, or thresholds to force a gate green."
+      - "Do not modify anything else under $WORK_DIR/code-review/; the review itself is not re-run here."
+    depends_on:
+      - code-review
+    max_retries: 2
+    on_exhaust: exit
+  - id: tensorflow-impl-smoke
+    task_type: normal
+    title: TensorFlow route smoke - run as agents/tf-route-developer.md; three-file route when a real TF API verifies, evidenced N/A with the template directory removed when not
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Run as agents/tf-route-developer.md (the single execution authority) and settle applicability first: does a REAL TensorFlow interface, declared by the frozen TestSpec's third_party entry in $WORK_DIR/golden.py, exist in the environment and match the current OpType (<OpPascal> from $WORK_DIR/spec/spec.yaml op.name) and the installed aclnn signature ($WORK_DIR/dev-package/vendors/<OpPascal>/op_api/include/aclnn_<op_name>.h)? A semantically similar built-in or composed API is NOT a match — that outcome is N/A, never a substitution."
+      - "Applicable branch: keep exactly three tracked files under $WORK_DIR/op/tests/tensorflow/ — run.sh, test_tensorflow.py, ttk_cases.csv — adapted from the plugin's reference packages, with every REPLACE_WITH_VERIFIED_API placeholder replaced by the verified tf.raw_ops.<API>; run.sh executes ONLY the direct call through the installed vendor; after it passes, run the full TTK TensorFlow e2e outside the script over the same CSV."
+      - "N/A branch: record the justification (the TestSpec third_party content, the APIs checked, why none matches OpType and signature) in $WORK_DIR/op/tests/tf-route.RECORD.md and delete $WORK_DIR/op/tests/tensorflow/ entirely — it currently holds the setup-copied placeholder template, which must not survive an N/A verdict."
+      - "Completion gate: either the applicable branch holds (three-file deliverable, direct call green and provably hitting the dev-package vendor, full ttk e2e PASS per case) or the N/A branch holds (justified RECORD + directory absent); precision IS gated here because no later task gates the tf layer."
+    approach:
+      - "Load the authority: read agents/tf-route-developer.md end-to-end; its Rules are hard constraints — no REGISTER_OP, parser, tf.load_op_library() wrapper or any test-side interface, no built-in/composite API substitute, modification scope limited to the TF test directory."
+      - "Workflow overlays (where an overlay and the agent doc differ, the overlay wins): the package root is $WORK_DIR/op (not operators/{OP}_package); the reference templates live in the plugin's operators/{add_custom,scale_custom}_package/tests/tensorflow/ (resolve OPERATORS_DIR from the workflow yaml path recorded in $WORK_DIR/.workflow/status.json, as setup-op-package did) — read-only, nothing copied wholesale; the locally installed vendor is the already-green $WORK_DIR/dev-package/vendors/<OpPascal>/: run.sh does NOT rebuild or reinstall — it only exports ASCEND_CUSTOM_OPP_PATH=$WORK_DIR/dev-package/vendors/<OpPascal> and executes python3 test_tensorflow.py; TTK_HOME=$WORK_DIR/ops-test-kit; evidence artifacts land OUTSIDE the test directory, at $WORK_DIR/op/tests/tf-route.RECORD.md and $WORK_DIR/op/tests/tf-route-e2e-result.csv; do not append to any LOG file and do not reply DONE — logging is the workflow runner's job; follow this task prompt's reply protocol."
+      - "Applicability determination: read the third_party declaration from the frozen $WORK_DIR/golden.py (with $WORK_DIR/spec/spec.yaml reference_oracle as cross-check); verify the declared API exists — python3 -c \"import tensorflow as tf; getattr(tf.raw_ops, '<API>')\" exits 0 — and that its parameter names, order, and dtypes match the aclnn signature and the spec interface. Both checks pass -> applicable; either fails -> N/A with the evidence quoted."
+      - "Applicable-branch mechanics: test_tensorflow.py keeps the template shape (npu_device.open().as_default() + one direct tf.raw_ops.<VERIFIED_API> call whose result is printed and checkable); ttk_cases.csv keeps the template header (testcase_name,api_name,tensor_view_shapes,tensor_dtypes,attributes), api_name = the verified tf.raw_ops.<API>, one data row per dtype declared in spec.yaml with shapes/attributes projected from a $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv row — record the row-to-source mapping in the RECORD."
+      - "TTK execution (outside run.sh, only after the direct call passes): cd $WORK_DIR/ops-test-kit && rm -f $WORK_DIR/op/tests/tf-route-e2e-result.csv && python3 -m ttk e2e -i $WORK_DIR/op/tests/tensorflow/ttk_cases.csv --plugin $WORK_DIR/golden.py -o $WORK_DIR/op/tests/tf-route-e2e-result.csv (default stat_rel_err, no --config); report per-case results as-is."
+      - "Evidence: $WORK_DIR/op/tests/tf-route.RECORD.md records the branch taken, the verified API name with its match rationale (or the N/A justification), the commands run, the ttk_cases row-to-source mapping, the direct-call output, per-case precision cells, and the vendor-hit proof (the ASCEND_CUSTOM_OPP_PATH value and the kernel_details excerpt showing <OpPascal>)."
+      - "Triage: a tf-route failure that is also red in the aclnn or blackbox pathway on the same shape is a kernel defect — attribute it in the RECORD and stop; every other fix lands only in the three TF files."
+    acceptance:
+      - "Evidence file exists: test -s $WORK_DIR/op/tests/tf-route.RECORD.md exits 0; it names the branch taken, and for N/A it carries the justification (TestSpec third_party content, APIs checked, why none matches OpType/signature)."
+      - "Applicable branch — tracked set is exactly three files with no placeholder residue: python3 -c \"from pathlib import Path; allowed={'run.sh','test_tensorflow.py','ttk_cases.csv'}; extra=[p.name for p in Path('$WORK_DIR/op/tests/tensorflow').rglob('*') if p.is_file() and p.parent.name!='__pycache__' and p.suffix!='.pyc' and p.name not in allowed]; assert not extra, extra\" exits 0, and ! grep -rn REPLACE_WITH_VERIFIED_API $WORK_DIR/op/tests/tensorflow/ exits 0."
+      - "Applicable branch — direct call green on the current package: bash $WORK_DIR/op/tests/tensorflow/run.sh exits 0, and tf-route.RECORD.md shows the run with ASCEND_CUSTOM_OPP_PATH=$WORK_DIR/dev-package/vendors/<OpPascal> and the hit evidence for the installed vendor."
+      - "Applicable branch — full TTK e2e green: test -s $WORK_DIR/op/tests/tf-route-e2e-result.csv exits 0, it holds a PASS row for every data row of ttk_cases.csv with no unexplained FAIL or SKIP, and every api_name equals the verified tf.raw_ops.<API> recorded in tf-route.RECORD.md."
+      - "N/A branch — directory must not exist: test ! -e $WORK_DIR/op/tests/tensorflow exits 0 (the setup-copied template is removed)."
+      - "Frozen assets unchanged: $WORK_DIR/op package sources (op_host/, op_kernel/, op_graph/, op_api/, CMakeLists.txt), $WORK_DIR/op/tests/{aclnn,blackbox,geir,torch,tiling}/, $WORK_DIR/golden.py, and $WORK_DIR/spec/spec.yaml are unmodified (verifier checks against the pre-task state)."
+    out_of_scope:
+      - "Write only the three files under $WORK_DIR/op/tests/tensorflow/ and the two evidence artifacts beside it (tf-route-e2e-result.csv, tf-route.RECORD.md); the N/A branch writes only the RECORD and deletes the template directory."
+      - "Never manufacture a TensorFlow interface: no REGISTER_OP, parser, or tf.load_op_library() wrapper, and no semantically similar built-in or composite API substitute; never edit golden.py or spec.yaml to add a tf entry — a missing real mapping is N/A, not a workaround."
+      - "Kernel or ACLNN defects are attributed in the RECORD and left to the kernel tasks; package sources, other test suites, tolerances, and TTK stay as-is."
+    depends_on:
+      - fix-findings
+    max_retries: 2
+    on_exhaust: exit
+  - id: docs-consistency-check
+    task_type: normal
+    title: Docs consistency check - verify every checkable doc claim empirically against the final package; fix doc deltas only, never code
+    executor: general-executor
+    verifier: general-verifier
+    goal:
+      - "Empirically verify the public docs of the finished operator ($WORK_DIR/op/docs/aclnn{OperatorName}.md and $WORK_DIR/op/README.md, exposed via the $WORK_DIR/docs symlink) against the final post-fix package: extract every machine-checkable claim — supported dtypes, formats, shape/rank ranges, attribute defaults, empty-tensor stances, constraints, and error semantics — and drive each through the real aclnn interface via TTK."
+      - "Two case families, both derived FROM the docs: positive cases for every documented capability (expect success), and negative cases for abnormal inputs plus scenarios OUTSIDE the documented support range (undocumented dtype/format, out-of-range shape/rank, empty tensor where the doc says unsupported — expect a clean ACLNN rejection, not a crash and not silent execution)."
+      - "Mismatch rule (hard): any behavior deviating from the doc, in EITHER direction — a documented feature that fails, or an out-of-scope input that executes/crashes — is fixed by editing the DOC to match the observed code behavior; the code is never touched in this task."
+      - "Completion gate: every extracted claim is settled in $WORK_DIR/docs-consistency/REPORT.md (match / mismatch-fixed naming the doc edit / N/A with reason), and the paired-docs validator exits 0 with STATUS: PASSED on the final doc tree."
+    approach:
+      - "Load the ascendc-docs-gen skill first (mandatory — it is the authority for doc structure, evidence rules, and the closing validator gate); do not restate or bypass its procedure."
+      - "Inventory the claims: read both doc files end to end and list every checkable claim with its file:line, cross-checked against $WORK_DIR/spec/spec.yaml and the installed header $WORK_DIR/dev-package/vendors/<OpPascal>/op_api/include/aclnn_<op_name>.h; this list becomes REPORT.md's claim table (unique ID per claim)."
+      - "Build the probe cases under $WORK_DIR/docs-consistency/cases/ — a positive CSV and a negative CSV, header per the blackbox ttk CSV contract with api_name = aclnn<OpPascal>; project rows from known-green $WORK_DIR/op/tests/blackbox/ttk/blackbox_l0.csv rows where possible (record the claim-to-case mapping); keep every dtype/format token a valid TTK token so a rejection happens at the operator, not at case parse."
+      - "Execute both CSVs from $WORK_DIR/ops-test-kit: rm -f the -o target, then python3 -m ttk aclnn -i <cases.csv> --pc=1 --task-prof false --run 1 --device-whitelist 0 --input-dist uniform --compare stat_rel_err --plugin $WORK_DIR/golden.py -o $WORK_DIR/docs-consistency/results/result_<positive|negative>.csv — golden as-is, never modified."
+      - "Judge every row against its doc-derived expectation: a documented-capability case must PASS; an out-of-scope case must be cleanly rejected — FAIL with NO_OUTPUT and a GetWorkspaceSize/ACLNN param error in the log. An executed case with output, a percentage/GOLDEN_FAILURE cell, a crash, or an infra token (TENSOR_DTYPES_INVALID / PARAM_COUNT_MISMATCH / OP_API_NOT_FOUND) is NOT a clean rejection: an infra token means the probe case is buggy (fix the case and rerun); an executed out-of-scope case is a mismatch (the doc is too narrow — widen it)."
+      - "Fix discipline: settle every mismatch by editing only the two doc files from the observed evidence — widen or narrow the support cells, flip the empty-tensor stance, adjust constraint wording, add error rows citing a concrete aclnnStatus only when that return was actually observed; respect the validator's anchored regions (prototype text and order, parameter-table row order, the exact empty-tensor stance phrasing the validator requires, compile-checked example). Zero mismatches -> edit no doc, write the zero-mismatch record, and stop."
+      - "Re-validate after every doc edit and once on the final tree: python3 $WORK_DIR/.agents/skills/ascendc-docs-gen/scripts/validate_operator_docs.py --operator-dir $WORK_DIR/op — exit 0, last line STATUS: PASSED; iterate per its ERROR list until green."
+      - "Evidence: $WORK_DIR/docs-consistency/REPORT.md holds the claim table (ID | doc claim with file:line | case name | observed result cell | verdict), the commands run, and the fix history (mismatch ID -> doc edit); a code-side defect suspected behind a mismatch is attributed there, never patched in the doc's place."
+    acceptance:
+      - "test -s $WORK_DIR/docs-consistency/REPORT.md exits 0 and it holds the settled claim table: every checkable claim from both doc files appears exactly once with a verdict of match, mismatch-fixed (naming the doc location edited), or N/A with reason; the zero-mismatch case is explicitly recorded as a no-op with no doc modified."
+      - "Cases cover the claims: the positive and negative CSVs under $WORK_DIR/docs-consistency/cases/ are non-empty, and every executable claim maps to at least one case row recorded in REPORT.md."
+      - "Full execution: each result CSV under $WORK_DIR/docs-consistency/results/ exists, is non-empty, and covers its cases CSV's full row set (no unexecuted rows, no unexplained skips)."
+      - "Validator green on the final tree: python3 $WORK_DIR/.agents/skills/ascendc-docs-gen/scripts/validate_operator_docs.py --operator-dir $WORK_DIR/op > /tmp/docs-consistency-validate.log 2>&1 exits 0 and tail -1 /tmp/docs-consistency-validate.log is exactly STATUS: PASSED."
+      - "Frozen assets unchanged: $WORK_DIR/op package sources (op_host/, op_kernel/, op_graph/, op_api/, CMakeLists.txt), $WORK_DIR/golden.py, $WORK_DIR/spec/spec.yaml, and every test suite under $WORK_DIR/op/tests/ are unmodified (verifier checks against the pre-task state); python3 $WORK_DIR/.agents/skills/geir-route-tester/scripts/verify_ttk_geir.py check-frozen --directory $WORK_DIR/op/tests/geir exits 0."
+    out_of_scope:
+      - "Write only under $WORK_DIR/docs-consistency/ and, for mismatch fixes, the two doc files $WORK_DIR/op/docs/aclnn{OperatorName}.md and $WORK_DIR/op/README.md; the $WORK_DIR/docs symlink stays as doc-gen created it."
+      - "Never modify package sources, the public aclnn signature, golden.py, tolerances, test suites, TTK, or design docs to make a doc claim true — doc follows code, never the reverse; a suspected code defect is attributed in REPORT.md and left to the kernel tasks."
+      - "Do not regenerate the docs wholesale; this task patches deltas found by empirical checks only."
+    depends_on:
+      - tensorflow-impl-smoke
+    max_retries: 2
+    on_exhaust: exit
+  - id: prepare-performance-optimization
+    task_type: normal
+    title: Record the performance optimization decision and prepare its inputs
+    executor: general-executor
+    verifier: general-verifier
+    depends_on:
+      - docs-consistency-check
+      - detect-npu-arch
+      - verify-ops-test-kit
+      - write-design-infershape-dtype
+    goal:
+      - "Read $WORK_DIR/requirements/REQUIREMENTS.md, consulting the original user prompt from the file named by $USER_PROMPT when available, before writing $WORK_DIR/.workflow/perf-optimize-decision.json with RUN or SKIP, the reason and evidence. Explicitly prohibiting optimization takes priority; otherwise SKIP only when every performance target has valid, individually passing measurements for the current implementation. Missing targets, measurements or identity evidence mean RUN, not all-passed."
+      - "For RUN, generate $WORK_DIR/perf-optimize/optimization-request.json from the recorded customer requirements and the defaults below; the verifier validates this request before the performance workflow can start. SKIP creates no request or optimization run."
+      - "Create $WORK_DIR/.workflow/perf-optimize.yaml as a symlink to the original performance skill perf-optimize.yaml for both RUN and SKIP. The subgraph always loads this same single-task YAML; its task reads the verified decision file before deciding whether to call the performance skill."
+      - "Only for RUN, make the performance primary Agent, four specialist Agents and required skills discoverable in the current harness client's project configuration without changing the installed registry-invoke/performance plugins or losing existing generation agents."
+    approach:
+      - "Read the parent workflow path from $WORK_DIR/.workflow/status.json and resolve its real path as PARENT_WORKFLOW. Resolve SKILL_DIR as (PARENT_WORKFLOW.parent.parent / \"skills/ops-perf-optimize\").resolve(strict=True), using the parent plugin's existing skill link, not a client configuration directory. For RUN, read SKILL_DIR/SKILL.md and references/workflow-contract.md as input-format references and resolve PLUGIN_ROOT with scripts/resolve-plugin-root.sh; do not start the performance skill in this task."
+      - "Read REQUIREMENTS.md and, when available, the original prompt from the file named by $USER_PROMPT. $USER_PROMPT is a file path, not the prompt text. If it is unset or the file is missing, unreadable or empty, continue using REQUIREMENTS.md. When the original prompt is available, retain its explicit opt-out and optimization options (mode, rounds/objective, case inputs and environment), even when omitted from REQUIREMENTS.md: an omitted opt-out still means SKIP/user_opt_out, and explicit options must not be replaced by defaults. Conflicting explicit statements fail preparation; never resolve a conflict by defaulting to RUN. Missing, empty or contradictory requirements still fail preparation. Do not rewrite either input. For explicit opt-out, record SKIP/user_opt_out from the intent evidence without reading performance measurements or collecting/checking source, build or loaded-binary identities. Otherwise read $WORK_DIR/design/Validation.md, existing measured performance evidence if any, and the current $WORK_DIR/op source/build identities. This generation workflow does not guarantee an existing performance report: do not invent one or collect performance merely to decide."
+      - "Atomically write $WORK_DIR/.workflow/perf-optimize-decision.json as a JSON object containing decision (RUN/SKIP), reason_code (user_opt_out/all_targets_met/optimization_needed), reason, requirements_path, requirements_sha256 and evidence_paths. Include the relevant requirements excerpts and any original-prompt excerpts used for explicit options; for all_targets_met, include per-target/case measurements, units, thresholds and loaded-binary identities. For user_opt_out, evidence_paths references the intent evidence; omit source_identity and require no source, build, loaded-binary or measurement evidence. RUN and all_targets_met require source_identity; all_targets_met also requires current loaded-binary identities matching the measurements. RUN additionally records request_path, request_sha256 and request_field_sources (each field's value and original-prompt/requirement/evidence/default source); SKIP omits request fields. This file is the sole decision record; do not create a parallel DECISION.md or infer the decision from historical run artifacts."
+      - "RUN defaults: tuning_mode=standard, optimization_objective=fixed_rounds with 3 rounds, functional_mode=existing, code_dir=$WORK_DIR/op. Explicit user options take precedence, including target mode and generalization; follow the existing skill's requirements for those modes instead of silently changing them to standard."
+      - "RUN with standard mode: use an explicitly supplied performance CSV if present. Otherwise construct $WORK_DIR/perf-optimize/inputs/performance.csv from the key shapes in design/Validation.md and the actual ACLNN signature, reusing matching validated blackbox rows and recording the mapping. Reuse $WORK_DIR/golden.py and the existing precision criteria. No invented target values, reduced shapes or substituted APIs."
+      - "RUN: the default functional inventory is the complete positive L0/L1 inventory already validated under $WORK_DIR/op/tests/blackbox/ttk/ (blackbox_l0.csv and blackbox_l1.csv). Adapt copies under perf-optimize/inputs/ to the performance tool's schema, retaining all rows, values and source mappings and adding unique case_id and L0/L1 metadata. Preserve L2 and oversized side tables at source; do not mix them into positive cases."
+      - "RUN: derive the actual Python executable, CANN setup and verified target SoC from the successful generation environment, $WORK_DIR/ops-test-kit/ttk-verify/env-info.txt and $WORK_DIR/npu-arch.json; verify that these identities still hold. Do not substitute the launcher's Python or equate all supported SoCs with tested SoCs. Missing required environment or explicit generalization competitor inputs is a blocker, not a default to invent."
+      - "RUN: use PLUGIN_ROOT/scripts/prepare_case_sets.py create-request with absolute paths and --confirmed-by registry-invoke-requirements-defaults. This records authorization by the generation workflow's requirement/default policy, not a fabricated per-field user confirmation. Record each field's provenance and the request path/SHA in $WORK_DIR/.workflow/perf-optimize-decision.json. Reuse matching inputs on retry; archive superseded unfrozen requests and never overwrite frozen run inputs."
+      - "RUN: identify the current harness CLI from the current session/process invocation evidence, not from which executable happens to exist. OpenCode maps to its project agent/skill configuration; Claude Code maps to claude/.claude. Record this evidence in perf-optimize/RUNTIME.md. An unknown client or ambiguous identity fails preparation; do not silently switch provider or start a CLI yourself."
+      - "RUN: in $WORK_DIR/perf-optimize/runtime/ call the original PLUGIN_ROOT/init.sh project <current-client> and check its health report. This staging install supplies perf-optimize, the four ascendc-perf-* specialists and the original skill links. Do not run the installer through the installed plugin's $WORK_DIR agent configuration links: that would modify the shared plugin."
+      - "RUN: merge only the staged agents/skills into a WORK_DIR-local client configuration. If its root, agents or skills directory is a symlink, first materialize that directory locally, retaining existing entries as absolute links to their original targets; preserve other configuration contents and keep the original symlink targets untouched. Add missing performance entries; reuse collisions only when they resolve to the same source, otherwise fail with the conflicting paths. Never overwrite a different agent/skill, model, permission, default-agent setting, hook or authentication file."
+      - "RUN: record configuration paths, original link targets and added role/skill mappings in RUNTIME.md. Verify perf-optimize and all four specialists resolve to this performance plugin, their declared skills resolve, and general-executor/general-verifier and all prior generation entries remain available. Harness starts the next node with general-executor so it can read the decision before loading any performance skill. For RUN, that CLI session acts as the skill's primary Agent and delegates to these specialists; this task only prepares discovery."
+      - "For both decisions, run the original workflow/scripts/prepare-perf-subgraph.sh from the resolved parent plugin with the command below and require exit 0. Do not reimplement, copy or edit the script: it locates the performance YAML relative to its own real path using Shell utilities, without reading workflow status. The verifier must approve the decision, RUN request and link before the child is dispatched. The script reuses an identical existing link and rejects conflicting files/links without replacement. Do not generate alternative subgraphs or edit workflow status to express the decision."
+      - |
+        bash "$(dirname "$PARENT_WORKFLOW")/scripts/prepare-perf-subgraph.sh" "$WORK_DIR"
+    acceptance:
+      - "$WORK_DIR/.workflow/perf-optimize-decision.json is a valid JSON object with decision, reason_code, reason, requirements_path, requirements_sha256 and evidence_paths. Independently read REQUIREMENTS.md and verify its recorded SHA and excerpts. When the original prompt is available, also check its explicit options are retained even when omitted from REQUIREMENTS.md; an original-prompt opt-out omitted from REQUIREMENTS.md still requires SKIP/user_opt_out. If the original prompt is unavailable, continue verification using REQUIREMENTS.md and the recorded excerpts; do not require a prompt path or SHA and do not reject a decision merely because that file changed or is missing. Defaults apply only to unspecified options. Verify the decision: SKIP/user_opt_out requires explicit intent evidence only; source_identity may be absent, and missing or changed source/build/binary artifacts do not invalidate the opt-out. Do not collect or compare their identities for this branch. SKIP/all_targets_met requires source_identity and every target to have current-source/current-binary passing measurements; RUN/optimization_needed also requires source_identity. No target or missing/stale measurements cannot justify SKIP/all_targets_met. Missing, empty or contradictory requirements fail this task. RUN also has request_path, request_sha256 and per-field provenance; SKIP has no request fields."
+      - "RUN: the verifier resolves the original performance plugin and personally runs scripts/prepare_case_sets.py validate-request --request $WORK_DIR/perf-optimize/optimization-request.json; exit 0 and status=valid. Independently check requirement overrides and any recorded original-prompt options against request_field_sources; unspecified options default to standard, fixed_rounds=3, existing full positive L0/L1 inventory and code_dir=$WORK_DIR/op. Verify full inventory coverage, performance-case provenance, actual Python/CANN/SoC and request SHA. Generation by the executor alone is not validation."
+      - "SKIP: no new optimization request, run, profiling, runtime configuration or production-code change was made. RUN: only decision/request/input-copy artifacts, the fixed workflow link and the permitted local runtime discovery entries were written; source cases, golden, tolerances and operator sources remain unchanged."
+      - "Independently resolve the real parent workflow from .workflow/status.json. For both RUN and SKIP, $WORK_DIR/.workflow/perf-optimize.yaml is a readable symlink to that parent plugin's skills/ops-perf-optimize/perf-optimize.yaml. Its only top-level key is nodes, containing exactly one normal task, perf-optimize-execute with executor=general-executor and verifier=general-verifier. That task reads $WORK_DIR/.workflow/perf-optimize-decision.json before invoking the skill; no alternate subgraph is generated."
+      - "RUN: request SHA is unchanged, and RUNTIME.md proves the current-client local configuration discovers perf-optimize, its four specialists and their skills while preserving the existing generation entries and configuration. Shared plugin targets are unchanged."
+      - "Plugin sources, shared configuration targets and .workflow/status.json are unchanged. Only an identical existing workflow link may be reused; conflicting files/links must be preserved and reported as failure."
+    out_of_scope:
+      - "Do not optimize, benchmark, freeze a run, change framework code or query conversation databases. Do not ask the performance execution task to generate or approve its own request."
+      - "Write only under $WORK_DIR/perf-optimize/, $WORK_DIR/.workflow/perf-optimize-decision.json, $WORK_DIR/.workflow/perf-optimize.yaml and the current client's WORK_DIR-local agent/skill discovery entries. Do not edit the parent workflow YAML, .workflow/status.json, STATE.md, shared plugin sources, global configuration or generation artifacts; preserve existing model, permission, hook and authentication settings."
+      - "Do not execute the child task, initialize a performance run or start a CLI. Do not replace a conflicting workflow file/link."
+    max_retries: 0
+    on_exhaust: exit
+  - id: performance-optimization
+    task_type: subgraph
+    file: .workflow/perf-optimize.yaml
+    depends_on:
+      - prepare-performance-optimization
