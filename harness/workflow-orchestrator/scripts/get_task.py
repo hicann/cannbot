@@ -505,12 +505,30 @@ def execute_rollback(work_dir, status, status_path, graph, tasks):
     return 0
 
 
-def build_prompt(node, phase, work_dir, user_prompt, advice=None, system_prompt=None):
-    """execute 阶段含 Approach 与 executed 协议句；verify 阶段要求 pass/fail；advice 仅 execute 阶段注入；
-    system_prompt 配置后以 "System-Prompt:" 前缀块插到 prompt 最顶部（两阶段均注入）。"""
+@dataclass
+class PromptContext:
+    """提示词可选上下文：回滚建议、全局指令与完整任务标识。"""
+
+    advice: str = None
+    system_prompt: str = None
+    task_id: str = None
+
+
+def build_prompt(node, phase, work_dir, user_prompt, context=None):
+    """构建 execute 或 verify 阶段提示词。
+
+    execute 阶段含 Approach 与 executed 协议句；verify 阶段嵌入 verdict 回调命令，
+    以裁决文件为权威并要求 pass/fail 文本兜底回复；advice 仅 execute 阶段注入。
+    system_prompt 配置后以 "$SYSTEM_PROMPT=" 变量行注入两个阶段。
+    task_id 缺省取 node["id"]；子图子任务须传命名空间全名（父/子）供 verdict 命令使用。
+    """
+    context = context or PromptContext()
+    advice = context.advice
+    system_prompt = context.system_prompt
 
     def block(name, items):
         return "%s:\n%s" % (name, "\n".join("- " + s for s in items))
+    tid = context.task_id or node["id"]
     parts = ["$WORK_DIR=%s" % work_dir, "$USER_PROMPT=%s" % user_prompt]
     if system_prompt:
         parts.append("$SYSTEM_PROMPT=%s" % system_prompt)
@@ -524,8 +542,17 @@ def build_prompt(node, phase, work_dir, user_prompt, advice=None, system_prompt=
     elif phase == "verify" and "procedure" in node:
         parts.append(block("Procedure", node["procedure"]))
     parts += [block("Acceptance", node["acceptance"]), block("Out-of-Scope", node["out_of_scope"])]
-    parts.append("After finishing, reply with only: executed" if phase == "execute"
-                 else "After verifying, reply with only: pass or fail")
+    if phase == "execute":
+        parts.append("After finishing, reply with only: executed")
+    else:
+        pass_cmd = 'python3 "%s" --work-dir "%s" --task-id "%s"' % (
+            os.path.join(orch.SCRIPTS_DIR, "verdict_pass.py"), work_dir, tid)
+        fail_cmd = ('python3 "%s" --work-dir "%s" --task-id "%s"'
+                    ' --reason "<why acceptance fails>"') % (
+            os.path.join(orch.SCRIPTS_DIR, "verdict_fail.py"), work_dir, tid)
+        parts.append("Report your verdict by running exactly one of:\n  %s\n  %s"
+                     % (pass_cmd, fail_cmd))
+        parts.append("Then reply with only: pass or fail")
     return "\n".join(parts)
 
 
@@ -737,8 +764,9 @@ def main():
         batch.append({
             "task_id": tid,
             "agent": node["executor"] if phase == "execute" else node["verifier"],
-            "prompt": build_prompt(node, phase, work_dir, up_path, tasks[tid].get("advice"),
-                                   system_prompt=config.get("system_prompt")),
+            "prompt": build_prompt(node, phase, work_dir, up_path, PromptContext(
+                advice=tasks[tid].get("advice"),
+                system_prompt=config.get("system_prompt"), task_id=tid)),
         })
         if phase == "execute":
             execute_ids.append(tid)

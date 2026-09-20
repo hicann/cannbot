@@ -40,8 +40,10 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
 
 --dry-run（UT 专用）：不拉起真 CLI，回复取 $WORK_DIR/.workflow/dry_replies.json：
 {"task_id": ["回复", ...]}，FIFO、跨 execute/verify 按调用顺序消费；"$CRASH" 模拟进程
-崩溃；"$SLEEP:<秒>" 模拟慢任务（睡眠后返回阶段默认回复）；未配置/耗尽的条目按阶段给
-默认回复（execute→executed，verify→pass）。
+崩溃；"$SLEEP:<秒>" 模拟慢任务（睡眠后返回阶段默认回复）；verify 阶段的
+"$VERDICT:pass"/"$VERDICT:fail[:原因]" 模拟 verifier 调 verdict 回调脚本（写裁决文件，
+文本回复缺省模拟不合规的"通过/失败"，可用 "|文本" 覆盖）；未配置/耗尽的条目按阶段给默认回复
+（execute→executed，verify→pass）。
 """
 import argparse
 import atexit
@@ -57,10 +59,14 @@ from datetime import datetime, timezone
 
 import yaml
 
+from update_status import classify  # 文本回复分类（裁决文件矛盾观测用）
+from verdict_common import verdict_file_path, write_verdict_file
+
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # G.PSL.02：now() 须显式传 tz；统一用 now(timezone.utc).astimezone() 按系统默认时区记录
 CRASH = "$CRASH"
 SLEEP_PREFIX = "$SLEEP:"
+VERDICT_PREFIX = "$VERDICT:"
 MAX_EMPTY_ROUNDS = 3
 TERMINAL_RESULTS = ("[ALL TASK FINISHED]", "[STUCK]")  # get_task 终结裁决的合法 result
 
@@ -320,6 +326,14 @@ def run_agent(entry, provider, work_dir, dry_map):
                 f.write("# Rollback Advice (SIMULATED / dry-run)\n\n"
                         "此文档由 dry-run 模拟生成，未执行真实失败分析。\n")
             reply = "advice-written"
+        elif entry["_phase"] == "verify" and reply.startswith(VERDICT_PREFIX):
+            # 模拟 verifier 调 verdict 回调脚本：写裁决文件；文本回复缺省模拟不合规自然语言，
+            # "|文本" 可显式覆盖（如 "$VERDICT:fail:原因|pass" 模拟裁决文件与文本矛盾）
+            body, _, text = reply[len(VERDICT_PREFIX):].partition("|")
+            verdict, _, reason = body.partition(":")
+            write_verdict_file(work_dir, entry["task_id"], verdict.strip(),
+                          reason.strip() or None)
+            reply = text or ("通过" if verdict.strip() == "pass" else "失败")
         return reply, reply == CRASH
     path = session_path(work_dir, entry["task_id"], entry["_phase"])
     with open(path, "wb") as f, subprocess.Popen(
@@ -357,6 +371,60 @@ def finish_advice(work_dir, entry, crashed=False, error=None):
               result="error" if error else "ready", error=error)
 
 
+def consume_verdict_file(work_dir, task_id):
+    """收割 verify 任务时读取裁决文件；合法返回 (verdict, reason|None)，否则 None。
+
+    裁决文件优先于文本回复（verifier 自然语言不可靠）；缺失/非法 → None，走文本兜底。
+    """
+    path = verdict_file_path(work_dir, task_id)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        data = None
+    if not isinstance(data, dict) or data.get("verdict") not in ("pass", "fail"):
+        return None
+    reason = data.get("reason")
+    if data["verdict"] != "fail" or not isinstance(reason, str) or not reason.strip():
+        reason = None
+    return data["verdict"], reason
+
+
+def clear_verdict_file(work_dir, task_id):
+    """派发 verify 前归档陈旧裁决文件；返回是否可安全派发。"""
+    path = verdict_file_path(work_dir, task_id)
+    try:
+        if not os.path.exists(path):
+            return True
+        history = os.path.join(work_dir, ".workflow", "verdicts", "history")
+        os.makedirs(history, exist_ok=True)
+        encoded_id = os.path.splitext(os.path.basename(path))[0]
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        archive = os.path.join(history, "%s.%s.json" % (encoded_id, stamp))
+        os.replace(path, archive)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_verdict_reply(work_dir, task_id, reply):
+    """优先使用有效裁决文件，记录裁决及文本矛盾；无有效文件则保留原回复。"""
+    verdict = consume_verdict_file(work_dir, task_id)
+    if not verdict:
+        return reply
+    word, reason = verdict
+    event = {"event": "verdict", "task_id": task_id, "verdict": word}
+    if reason:
+        event["reason"] = reason
+    text_cls = classify(reply)
+    if text_cls in ("pass", "fail") and text_cls != word:
+        event["warning"] = "文本回复 %r 与裁决文件矛盾，以裁决文件为准" % text_cls
+    log_event(work_dir, **event)
+    return word
+
+
 def harvest_done(work_dir, inflight):
     """收割已完成的 future（主线程串行调用，status.json 唯一写入路径）。
 
@@ -377,6 +445,8 @@ def harvest_done(work_dir, inflight):
         if crashed:
             log_event(work_dir, event="crash", task_id=entry["task_id"])
             reply = CRASH
+        elif entry.get("_phase") == "verify":
+            reply = resolve_verdict_reply(work_dir, entry["task_id"], reply)
         rc = update(work_dir, entry["task_id"], reply).returncode
         if rc != 0:
             # 单任务更新失败不停机：可能因 agent 越权直改 status.json 等。
@@ -459,6 +529,9 @@ def dispatch_batch(ctx, batch):
             "verify"
             if t["status"] == "executed"
             else "execute")
+        if entry["_phase"] == "verify":
+            if not clear_verdict_file(ctx.work_dir, entry["task_id"]):
+                return err("裁决文件归档失败: %s" % entry["task_id"])
     for entry in batch:
         if entry["_phase"] == "advice":
             continue

@@ -17,6 +17,7 @@ or directly::
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,7 @@ ORCHESTRATOR = SKILL_ROOT / "scripts" / "orchestrator.py"
 
 sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 import get_task  # noqa: E402  白盒：借用纯函数 build_prompt / validate_workflow
+from verdict_common import verdict_file_path  # noqa: E402
 
 
 def _node(node_id, **overrides):
@@ -807,13 +809,14 @@ class BuildPromptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as wd:
             advice = Path(wd) / "advice.md"
             advice.write_text("Investigate the original failure before retrying.")
-            p = get_task.build_prompt(self.NODE, "execute", wd, "/up", advice=str(advice))
+            p = get_task.build_prompt(self.NODE, "execute", wd, "/up",
+                                      get_task.PromptContext(advice=str(advice)))
             self.assertIn("Rollback-Advice:", p)
             self.assertIn(advice.read_text(), p)
 
     def test_verify_prompt_omits_advice(self):
         p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
-                                  advice="/wd/.workflow/advice/x.md")
+                                  get_task.PromptContext(advice="/wd/.workflow/advice/x.md"))
         self.assertNotIn("Rollback-Advice", p)
 
     def test_prompt_without_advice_unchanged(self):
@@ -822,14 +825,35 @@ class BuildPromptTest(unittest.TestCase):
 
     def test_execute_prompt_includes_system_prompt(self):
         p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up",
-                                  system_prompt="全局指令")
+                                  get_task.PromptContext(system_prompt="全局指令"))
         self.assertIn("$SYSTEM_PROMPT=全局指令", p)
         self.assertIn("$WORK_DIR=/wd", p)
 
     def test_verify_prompt_includes_system_prompt(self):
         p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
-                                  system_prompt="全局指令")
+                                  get_task.PromptContext(system_prompt="全局指令"))
         self.assertIn("$SYSTEM_PROMPT=全局指令", p)
+
+    def test_verify_prompt_embeds_verdict_commands(self):
+        p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up")
+        scripts = get_task.orch.SCRIPTS_DIR
+        self.assertIn('python3 "%s" --work-dir "/wd" --task-id "a"'
+                      % (scripts + "/verdict_pass.py"), p)
+        self.assertIn('python3 "%s" --work-dir "/wd" --task-id "a"'
+                      ' --reason "<why acceptance fails>"'
+                      % (scripts + "/verdict_fail.py"), p)
+        self.assertIn("Then reply with only: pass or fail", p)
+        self.assertNotIn("After verifying, reply with only", p)
+
+    def test_verify_prompt_uses_namespaced_task_id(self):
+        p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
+                                  get_task.PromptContext(task_id="sub/a"))
+        self.assertIn('--task-id "sub/a"', p)
+
+    def test_execute_prompt_has_no_verdict_commands(self):
+        p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up")
+        self.assertNotIn("verdict_", p)
+        self.assertIn("After finishing, reply with only: executed", p)
 
     def test_prompt_without_system_prompt_unchanged(self):
         p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up")
@@ -856,6 +880,113 @@ class ValidateSystemPromptTest(unittest.TestCase):
         for bad in (123, ["x"], "", "   "):
             err = get_task.validate_workflow(dict(self.BASE, system_prompt=bad))
             self.assertIsNotNone(err, "system_prompt=%r 应校验失败" % (bad,))
+
+
+class VerdictFileTest(unittest.TestCase):
+    """verdict 裁决文件消费（黑盒 dry-run）。
+
+    $VERDICT 令牌模拟 verifier 调脚本写裁决文件；编排器以裁决文件为权威，文本解析兜底。
+    """
+
+    @staticmethod
+    def _events(wd, name):
+        return [e for e in read_log(wd) if e.get("event") == name]
+
+    def test_verdict_file_pass_with_non_compliant_text(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],
+            dry_replies={"t1": ["executed", "$VERDICT:pass"]})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
+        verdicts = self._events(wd, "verdict")
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(verdicts[0]["verdict"], "pass")
+        self.assertFalse(self._events(wd, "reset"))  # 一次验证即过，无重验证
+        self.assertTrue(Path(verdict_file_path(wd, "t1")).exists())  # 保留裁决文件
+
+    def test_verdict_file_fail_with_reason(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],  # max_retries=0 → fail 即耗尽 → on_exhaust=exit
+            dry_replies={"t1": ["executed", "$VERDICT:fail:报告未生成"]})
+        self.assertEqual(code, 1, out)
+        task = read_status(wd)["tasks"]["t1"]
+        self.assertEqual(task["status"], "fail")
+        self.assertTrue(task["exhausted"])
+        verdicts = self._events(wd, "verdict")
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(verdicts[0]["verdict"], "fail")
+        self.assertEqual(verdicts[0]["reason"], "报告未生成")
+
+    def test_text_fallback_when_no_verdict_file(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],
+            dry_replies={"t1": ["executed", "通过"]})
+        # 兜底：others → 滞留 verifying → reset 自愈重验证（dry 默认回复 pass 收尾）
+        self.assertEqual(code, 0, out)
+        self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
+        self.assertTrue(self._events(wd, "reset"))
+        self.assertFalse(self._events(wd, "verdict"))
+
+    def test_stale_verdict_file_cleared_on_dispatch(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],
+            pre_files={os.path.relpath(verdict_file_path("/", "t1"), "/"):
+                       '{"verdict": "fail"}\n'})
+        # 陈旧裁决文件在派发 verify 前被预清理；dry 默认文本回复 pass 生效
+        self.assertEqual(code, 0, out)
+        self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
+        self.assertFalse(Path(verdict_file_path(wd, "t1")).exists())
+        history = Path(wd) / ".workflow" / "verdicts" / "history"
+        archived = list(history.glob("t1.*.json"))
+        self.assertEqual(len(archived), 1)
+        self.assertRegex(archived[0].name,
+                         r"^t1\.20[0-9]{6}T[0-9]{6}\.[0-9]{6}Z\.json$")
+        self.assertFalse(self._events(wd, "verdict"))
+
+    def test_verdict_archive_failure_stops_dispatch(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],
+            pre_files={
+                os.path.relpath(verdict_file_path("/", "t1"), "/"):
+                    '{"verdict": "fail"}\n',
+                ".workflow/verdicts/history": "not a directory\n",
+            })
+        self.assertEqual(code, 2, out)
+        self.assertIn("裁决文件归档失败", out)
+        self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "executed")
+
+    def test_invalid_verdict_token_fails_fast(self):
+        code, out, _ = self._run(
+            nodes=[_node("t1")],
+            dry_replies={"t1": ["executed", "$VERDICT:bogus"]})
+        # 非法 verdict 令牌属测试数据 bug，fail fast（与非法 $SLEEP 令牌同款语义）
+        self.assertEqual(code, 2, out)
+        self.assertIn("非法 verdict", out)
+
+    def test_verdict_file_wins_over_contradictory_text(self):
+        code, out, wd = self._run(
+            nodes=[_node("t1")],
+            dry_replies={"t1": ["executed", "$VERDICT:fail:报告缺失|pass"]})
+        # 文本谎称 pass，裁决文件为 fail：裁决文件为准 + warning 记录矛盾
+        self.assertEqual(code, 1, out)
+        self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "fail")
+        verdicts = self._events(wd, "verdict")
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(verdicts[0]["verdict"], "fail")
+        self.assertEqual(verdicts[0]["reason"], "报告缺失")
+        self.assertIn("warning", verdicts[0])
+
+    def _run(self, **kwargs):
+        code, out, wd = run_orchestrator(**kwargs)
+        self._work_dirs.append(wd)
+        return code, out, wd
+
+    def setUp(self):
+        self._work_dirs = []
+
+    def tearDown(self):
+        for d in self._work_dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
