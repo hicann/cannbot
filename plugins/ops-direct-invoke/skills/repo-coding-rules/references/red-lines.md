@@ -1,144 +1,42 @@
-# 编码红线与解决方案
+# 编码检查表
 
-> 本仓算子编码中明确禁止的红线。每条红线均为「违反 = 检视不通过」的硬约束，触发即为阻塞项。逐条核对；命中任一条，按「解决方案」列修正后方可通过。
->
-> 红线分两类：**A 类 = 提交反作弊**（通用算子质量底线，评测集提交时违反 = 整算子 0 分，最高优先级）；**B 类 = 通用 Ascend C 编码**（代码质量阻塞项）。
-> A 类权威原文在评测集的提交规则文档（如 cann-bench `docs/guide/submission_rules.md`），本文为摘要——检视时以原文为准。
+## A 类：候选实现真实性
 
----
+对应官方 `SUB-BEH-001`～`SUB-BEH-007`，违反时不能作为有效候选交付。适用范围是候选执行路径；独立 golden 和测试输入生成可以使用 Torch，不得因此被误判为候选代算。
 
-## A 类：提交反作弊红线（评测集提交时违反 = 整算子 0 分）
+| 本仓编号 / 官方规则 | 检视内容 | 修正方向 |
+|--------------------|----------|----------|
+| A1 / SUB-BEH-001 | 包装层是否把全部或部分计算交给 Torch/torch_npu 内置计算 API | 由提交 kernel 实现；kernel 内 Ascend C 原语不属于包装层代算 |
+| A2 / SUB-BEH-002 | 是否在包装层通过 transpose/contiguous/cast 等完成实质性数据或布局变换 | 变换纳入 kernel；参数读取、Tiling 准备和输出分配可以保留 |
+| A3 / SUB-BEH-003 | 是否只转发到 CANN 内置同名算子 | 提供自有实现，不把接口包装当开发完成 |
+| A4 / SUB-BEH-004 | CPU fallback、没有实际执行提交的 NPU kernel | 在目标设备真实执行并记录证据 |
+| A5 / SUB-BEH-005 | 缓存输出、固定结果或按公开 case/data pointer 命中 | 对每次合法输入真实计算；有依据的 shape 分派不是预置答案 |
+| A6 / SUB-BEH-006 | 篡改 profiler、同步、计时或安全检查 | 保持评测器及环境接口完整 |
+| A7 / SUB-BEH-007 | FakeTensor、伪对象、惰性结果或非法返回结构 | 返回实际计算的 Tensor，符合输出结构与连续性要求 |
 
-A 类红线是算子实现的通用质量底线——要求「提交者实现真实 NPU kernel」。以下行为无论是否有评测集均为阻塞级问题；**评测集提交时（模式 A）命中即判无效提交 = 整算子 0 分**。
+自动保护没有报错不代表所有规则都通过；I/O 变换等仍需代码检视。报告应引用具体违规位置，不能只凭关键字命中判定。
 
-### A1. 调用 PyTorch / torch_npu 内置计算 API 代算（无效提交）
+## B 类：工程与代码质量
 
-候选算子执行路径中，**不应直接调用** PyTorch / torch_npu 内置计算 API 完成目标算子，即使只把部分计算交给现成 API 也属无效。
+| 检查项 | 要求 |
+|--------|------|
+| 提交接口 | 根 build.sh 可复现生成 cann_bench wheel，Python callable、schema、C++ 注册与 proto 一致 |
+| 版本与载入 | 当前源码、测试、构建 wheel 和实际加载库一致；没有旧包或 golden wheel 冒充候选 |
+| 硬件资源 | 核数、UB/Buffer 与分块满足目标平台；动态资源查询或固定参数的适用依据明确，不无依据写死硬件假设 |
+| 搬运与边界 | 用目标平台支持的 API 处理对齐、尾块和边界，地址/长度计算无溢出或越界；不以强制 wrapper 拷贝隐藏不支持输入 |
+| 并发与同步 | 当前 stream/设备正确，依赖有对应同步，分配与释放、队列生产与消费成对；不把数调用次数当完整正确性证明 |
+| 类型与数值 | dtype 分派与计算精度符合规格，未初始化变量、非法转换及未覆盖分支有检查 |
+| API 可用性 | 关键 API 及变体有目标版本依据；不凭空推荐不存在的接口，不把一个示例的可用性推广到所有芯片 |
+| 代码边界 | kernel 中不使用目标工具链不支持的动态分配、递归或库功能；具体支持情况按平台资料和编译证据核实 |
+| 许可与输出 | 新增代码带仓库 license 头，保留上游来源许可；Python 日志使用 logging |
+| 测试可信性 | 不改评测器、golden、阈值或删测掩盖失败；公开任务只读，新增用例和来源可追溯 |
 
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| 包装层调 `F.softmax` / `x @ y` / `torch.mm` / `F.conv2d` 等 | 审查 plugin 层调用 | 核心计算由提交 kernel 内 Ascend C 原语完成 |
-| 改用 `torch.ops.aten.matmul` / `x.matmul(y)` / `torch.nn.functional.*` 等同类绕过 | 审查 aten/torch_npu op 调用 | 同上——计算主体在 kernel |
+检视仅记录本次授权范围的问题与证据，不要求实现照搬知识搜集草稿，也不自行决定回退或放宽标准。
 
-> 允许在 **kernel 内**使用 Ascend C 原生 API/intrinsic（`AscendC::Add`/`Mul`/`Exp`/`Mmad` 等）——它们编译期成为提交 kernel 的一部分，不等同于包装层调现成算子。
+## 核对依据
 
-### A2. 用 PyTorch / torch_npu 处理输入输出 tensor（无效提交）
+已核对 cann-bench `08d519c503843bce5fd4672ffa2259abeb22fb00`；按实际 checkout 记录版本和差异。
 
-输入预处理、输出后处理、中间 tensor 变换也是目标算子实现的一部分。不能用 PyTorch / torch_npu tensor API 先完成 transpose/permute/contiguous/reshape-copy/cast/slice/gather/scatter 等实质性数据搬运，再交给 kernel。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| `x.transpose(0,1).contiguous()` 后再 launch kernel | 审查 plugin 层 tensor 操作 | transpose/permute 在 kernel 内用 Ascend C 数据搬运实现 |
-| `y.permute(0,2,1).contiguous()` 返回输出 | 审查返回前 tensor 操作 | 输出重排在 kernel 内完成 |
-| `x.cpu()` 处理后搬回（见 A4） | 审查 device 迁移 | 全程在 NPU kernel 完成 |
-
-> 此类 I/O 搬运属**人工审查**判定（框架不自动拦截 Gather/Transpose 等以其为核心语义的算子）；matmul/conv/softmax 等计算类绕过由 `TorchOpGuard`/`DeviceResidencyGuard` **自动拦截**（默认 block）。
-
-### A3. 路由到 CANN 内置同名算子（无效提交）
-
-提交工程不应只是把任务转发给评测环境已有的 CANN 内置同名算子。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| 包装层调 `aclnnSoftmaxGetWorkspaceSize` + `aclnnSoftmax` | 审查 aclnn 调用 | 提交自己的 kernel，kernel 内用 Ascend C 原语组合 |
-| `ADD_TO_LAUNCHER_LIST_AICORE(Softmax)` 注册/转发现成 AiCore 实现 | 审查 launcher 注册 | 删除转发，实现自有 kernel |
-
-### A4. CPU fallback 或未执行提交 NPU kernel（无效提交）
-
-候选算子不能把输入搬回 CPU 计算再把结果搬回 NPU。即使结果数值正确，只要核心计算不是由提交 NPU kernel 完成，也属无效。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| `torch.exp(x.cpu()).to(x.device)` | 审查 `.cpu()` 调用 | 全程 NPU kernel 计算 |
-| `(x.cpu() + y.cpu()).npu()` | 审查 host 侧计算 | 同上 |
-
-### A5. 缓存输出 / 固定输出 / 按输入地址命中（无效提交）
-
-实现不能缓存某次执行结果在后续 repeat 中直接返回；也不应依赖固定输入地址/shape/dtype/attrs/公开 case 特征返回预设结果。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| `_cache = {}; key=x.data_ptr(); if key in _cache: return _cache[key]` | 审查缓存逻辑 | 每次真实计算，不缓存 |
-| `_last_output` 固定返回 | 审查全局状态 | 删除固定输出 |
-| 按公开 case 的固定 shape/dtype 返回常量 | 审查 shape/dtype 分支条件 | 实现须泛化到所有合法输入 |
-
-> 性能测量阶段框架**轮换输入地址**（每个 repeat 喂独立 clone，`data_ptr()` 不同）——按地址命中的缓存会 cache miss 并在精度复检中暴露。该轮换仅作用于性能阶段；精度阶段不轮换。
-
-### A6. 篡改 profiler 或 timing API（无效提交）
-
-提交代码不应 monkey-patch / 替换 / 删除评测环境的计时、同步、性能采集或运行时 API。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| `torch.npu.synchronize = lambda *a, **k: None` | 审查 monkey-patch | 删除篡改 |
-| `torch_npu.profiler.profile = fake_profile` | 审查 profiler 替换 | 删除篡改 |
-
-### A7. 返回 FakeTensor / 懒求值包装器 / 伪 Tensor（无效提交）
-
-候选算子必须返回真实 `torch.Tensor`。用对象包装真实计算、延迟求值、返回 Tensor 子类伪装结果，都破坏评测边界。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| `class LazyTensor: ...` 包装返回 | 审查返回类型 | 返回真实 `torch.Tensor` |
-| 返回 Tensor 子类伪装结果 | 审查返回类型 | 同上 |
-
----
-
-## B 类：通用 Ascend C 编码红线
-
-以下为 kernel 实现的代码质量阻塞项，违反 = CP5 检视不通过（回退 3.1 修复）。
-
-### B1. 硬件参数硬编码（阻塞）
-
-所有硬件参数必须运行时动态获取，禁止写死。
-
-| 红线 | 检测 | 解决方案 |
-|------|------|---------|
-| 写死核数 `blockDim = 8;` | `grep -n "blockDim\s*=\s*[0-9]" *.cpp` | `platform_ascendc::PlatformAscendCManager` 动态获取核数 |
-| 写死核索引 `blockIdx = 0;` | `grep -n "blockIdx\s*=\s*[0-9]" *.cpp` | `AscendC::GetBlockIdx()` 获取 |
-| 写死分块大小 `constexpr TILE = 4096;` | 目视 + grep | 根据 UB 容量动态计算或验证固定值在所有目标 SoC UB 内 |
-| 任何硬编码 UB 大小 | 目视 | 运行时 `GetCoreMemSize(UB, ubSize)` 获取 |
-
-### B2. 数据搬运 API 误用（阻塞）
-
-| 红线 | 原因 | 解决方案 |
-|------|------|---------|
-| `DataCopy(GM, UB)` / `DataCopy(UB, GM)` 处理非对齐 | 不支持非对齐，易致隐蔽 bug | 统一改用 `DataCopyPad` + `DataCopyExtParams`/`DataCopyPadExtParams` |
-| `GlobalTensor::SetValue/GetValue`（非调试） | 逐元素访问效率极低 | `DataCopyPad` 批量搬运 |
-
-```cpp
-// 正确：DataCopyPad 处理非对齐
-AscendC::DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(T)), 0, 0, 0};
-AscendC::DataCopyPadExtParams<T> padParams{false, 0, 0, 0};
-AscendC::DataCopyPad(xLocal, xGm_[offset], copyParams, padParams);
-```
-
-### B3. 流水线与数据流（阻塞）
-
-| 红线 | 解决方案 |
-|------|---------|
-| DataCopy 后未用 EnQue/DeQue 同步 | DataCopy 后补 EnQue/DeQue 配对同步 |
-| `AllocTensor` 无对应 `FreeTensor`（内存泄漏） | 每个 Alloc 配对 Free；`grep -c AllocTensor`/`grep -c FreeTensor` 核对数量 |
-| EnQue/DeQue 未配对 | 配对；`grep -c EnQue`/`grep -c DeQue` 核对 |
-| 冗余 PipeBarrier（同 pipe 连续操作间加 barrier） | 只在跨 pipe 数据依赖点保留 barrier |
-| **热路径（主循环内）无差别使用 `PipeBarrier<PIPE_ALL>`** | 依赖只涉及单一队列时用定向 barrier，见下方「定向 barrier 优先原则」 |
-
-> Pipe 归属：PIPE_MTE2（GM→UB）、PIPE_V（矢量/归约/Cast）、PIPE_MTE3（UB→GM）、Scalar。跨 pipe 且存在 RAW/WAW 依赖才需 barrier；同 pipe 硬件保序。
->
-> **定向 barrier 优先原则**：`PipeBarrier` 按队列定向同步——依赖只涉及单一队列时用定向 barrier；`PIPE_ALL` 会排空全部队列（MTE2/MTE3/V/S 全等到调用点），每次都是整段流水线气泡，主循环内逐操作全同步会把 double buffer 重叠度打回串行。依赖映射：等 GM→UB 完成 → `PIPE_MTE2`；等 Vector 完成 → `PIPE_V`；等 UB→GM 完成 → `PIPE_MTE3`；等 Cube 完成 → `PIPE_AIC`；标量 `GetValue/SetValue` 回读/回写 UB 属 V 依赖 → `PIPE_V`。`PIPE_ALL` 仅限多队列汇聚（VF 读 UB 前、跨核 flag 收发前）与调试定位；调试定位后必须替换为定向 barrier 或 EnQue/DeQue 再交付。
-
-### B4. Kernel 内禁止事项（阻塞）
-
-| 红线 | 解决方案 |
-|------|---------|
-| Kernel 内使用 `std::` 命名空间函数 | 改用 Ascend C API |
-| 动态内存分配（`new` / `malloc`） | 用 `TPipe` + `TQue`/`TBuf` 管理内存 |
-| 递归调用 | 改写为迭代 |
-| 使用未初始化变量 | 使用前初始化 |
-
-### B5. API 用法未经验证（阻塞）
-
-| 红线 | 解决方案 |
-|------|---------|
-| 凭记忆/猜测写入 API，未查文档 | 用任何 API 前通过 `ascendc-docs-search` 查阅 `{API_NAME}` 官方文档 |
-| 检视意见推荐 API 未附文档来源 | 推荐 API 的修复建议须附官方文档来源，禁止凭记忆 |
+- [docs/guide/submission_rules.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/docs/guide/submission_rules.md)
+- [docs/spec/submission_spec.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/docs/spec/submission_spec.md)
+- [examples/direct_launch_example/README.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/examples/direct_launch_example/README.md)

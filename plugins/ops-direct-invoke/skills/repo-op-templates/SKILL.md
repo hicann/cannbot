@@ -1,19 +1,15 @@
 ---
 name: repo-op-templates
-description: 算子代码模板库，提供代码模板与模板选择规则，作为算子代码开发的起点。触发：开始实现算子代码、搭建工程骨架前，先取模板复制到工作区，以此为起点开发。
+description: 从 cann-bench 的 direct_launch_example 复用直调工程骨架和算子模板；新建工程或新增算子时使用。
 ---
 
-# 算子代码模板库
+# 算子工程模板
 
-实现算子代码前，先取工程模板复制到工作区，以此为起点开发，禁止从零创建工程文件。
+工程来源为 cann-bench 的 `examples/direct_launch_example/`，保留它的构建、接口注册和 Python 导出约定。目标仓已经有兼容工程时就地扩展，不重建或覆盖已有代码。
 
-本仓算子工程采用 direct launch 结构。模板分两层：**工程骨架**（build.sh / setup.py / CMakeLists.txt / cmake/ / python 包 / csrc/extension.cpp——所有算子共享，一次搭建）与**算子模板**（kernel.cpp / launch.h / plugin.cpp / CMakeLists.txt——每个算子复制一份填充）。两层模板见 references。
-
-> 通用 Ascend C kernel 编写范式仍可参照共享 skill `ascendc-direct-invoke-template`；direct launch 工程结构与注册契约以本 skill 的 references 为准。
-
-## 路由
-
-| 场景 | 加载 |
+| 工作 | 参考 |
 |------|------|
-| 搭建工程骨架（首次创建提交工程目录） | [references/project-skeleton.md](references/project-skeleton.md) |
-| 新增算子（复制算子模板，填充 kernel/plugin/CMakeLists） | [references/operator-template.md](references/operator-template.md) |
+| 取得官方模板、建立工程骨架 | [工程骨架](references/project-skeleton.md) |
+| 添加 kernel、launch、注册和 Python 接口 | [算子模板](references/operator-template.md) |
+
+模板是可运行工程的起点，不证明其 Add/Sqrt 的算法、dtype 或精度适合目标算子；按已确认规格完成实现。

@@ -58,7 +58,7 @@ try {
   ]) {
     if (!existsSync(path)) throw new Error(`packaged install is missing: ${path}`);
   }
-  run(executable, ["install", "ops-direct-invoke", "--plugin-dir", "dist/plugins/ops-direct-invoke-harness", "--tool", "claude", "--target", target], consumer, {
+  run(executable, ["install", "ops-direct-invoke", "--tool", "claude", "--target", target], consumer, {
     ...process.env,
     HOME: join(sandbox, "home"),
     XDG_CACHE_HOME: join(sandbox, "cache"),
@@ -67,11 +67,11 @@ try {
   for (const path of [
     join(target, ".claude", "skills", "repo-requirement", "SKILL.md"),
     join(target, ".claude", "skills", "repo-requirement", "references", "requirement-checklist.md"),
-    join(target, ".claude", "skills", "ops-direct-invoke", "templates", "docs", "黑盒测试设计.md"),
-    join(target, ".claude", "skills", "ops-direct-invoke", "templates", "workflows", "registry.csv"),
-    join(target, ".claude", "skills", "ops-direct-invoke", "templates", "workflows", "basic.yaml"),
-    join(target, ".claude", "skills", "ops-direct-invoke", "tasks", "白盒测试设计.yaml"),
-    join(target, ".claude", "skills", "ops-direct-invoke", "tasks", "算子开发.yaml"),
+    join(target, ".claude", "skills", "ops-direct-invoke", "templates", "黑盒测试设计.md"),
+    join(target, ".claude", "skills", "ops-direct-invoke", "scripts", "generate_workflow_guide.py"),
+    join(target, ".claude", "skills", "ops-direct-invoke", "workflows", "ascendc/basic.yaml"),
+    join(target, ".claude", "skills", "ops-direct-invoke", "tasks", "ascendc", "白盒测试设计.yaml"),
+    join(target, ".claude", "skills", "ops-direct-invoke", "tasks", "ascendc", "算子开发.yaml"),
     join(target, ".claude", "skills", "workflow-orchestrator", "scripts", "orchestrator.py"),
     join(target, ".cannbot", "plugins", "ops-direct-invoke", "agents", "ops-direct-invoke-verifier.md"),
     join(target, ".claude", "skills", "repo-env-check", "SKILL.md"),
@@ -81,8 +81,11 @@ try {
   }
   const workflowRun = join(sandbox, "workflow-run");
   const entryRoot = join(target, ".claude", "skills", "ops-direct-invoke");
+  const guide = join(workflowRun, "workflow-guide.csv");
+  run("python3", [join(entryRoot, "scripts", "generate_workflow_guide.py"), "--output", guide], consumer);
+  if (!readFileSync(guide, "utf8").includes("ascendc/basic.yaml")) throw new Error("basic workflow missing from guide");
   run("python3", [join(entryRoot, "scripts", "run_workflow.py"),
-    "--template", "basic.yaml", "--work-dir", workflowRun, "--provider", "claude",
+    "--template", "ascendc/basic.yaml", "--work-dir", workflowRun, "--provider", "claude",
     "--prompt", "package workflow smoke test", "--foreground", "--dry-run"], consumer);
   console.log(`Verified ${archiveName} through the installed cannbot npm bin.`);
 } finally {

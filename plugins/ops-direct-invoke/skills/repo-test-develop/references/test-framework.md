@@ -1,90 +1,75 @@
-# 测试工程组成与开发方法
+# CANN Bench 测试工程
 
-> 测试工程按需求文档的**评测来源模式**分两条路径：
-> - **模式 B（无评测集，默认）**：developer-test 自建 golden + 用例 + 测试脚本，参考主流评测集（如 cann-bench）的 golden/cases/评测脚本范式组织。
-> - **模式 A（有评测集）**：评测集自带 golden / cases / 算子原型定义，提交方不重写——测试开发职责为对齐评测契约、补全白盒用例、以评测集评测脚本作为 harness。
->
-> **用例怎么设计**（模式 B 从需求设计 / 模式 A 核对覆盖）见 [blackbox-design.md](blackbox-design.md)；**白盒怎么补全**见 [whitebox-design.md](whitebox-design.md)；精度与性能见 [precision-and-perf.md](precision-and-perf.md)。
+## 目录与复用
 
-## 模式 B：自建测试工程（无评测集）
+`bench_root` 为已记录版本的 cann-bench checkout；`source_dir` 为候选源码；`task_dir` 为本轮采用的任务根目录（`tests/cannbench/tasks/`），`rel_path` 为 `levelN/<op>`；`bench_root` 不与任务根目录混用。检查已有任务的算子名、schema、规格和用例，复用匹配资产；补充内容写入目标仓授权的 `tests/cannbench/tasks/levelN/<op>/`，使用同一文件格式与同一评测器，不更改上游任务。
 
-### 测试工程组成
+```text
+tests/cannbench/tasks/levelN/<op>/
+├── proto.yaml         # operator、schema、输入输出和属性
+├── desc.md            # 数学及接口语义
+├── golden.py          # 与 schema 匹配的独立参考函数
+└── cases.yaml         # cases 列表：保留原用例并加入黑盒/白盒补充
+```
 
-| 文件 | 作用 |
-|------|------|
-| `gen_data.py` | 测试数据生成（按 dtype/shape 生成输入与 CPU golden 期望输出） |
-| `run.sh` | 运行脚本（编译 + 执行 + 结果比对的入口） |
-| golden 实现 | CPU 侧参考实现，产出期望输出，作为精度比对基准 |
-| 用例表 | 按 L0/L1/L2 分级组织的 shape × dtype 组合 |
-| 性能采集框架 | 跑出各 shape/dtype 的耗时、带宽、利用率 |
-| `whitebox_cases/` | 白盒补充用例（源码分支覆盖，见 [whitebox-design.md](whitebox-design.md)） |
+已有任务也保留 `tasks/levelN/<op>` 层次，CLI 的 `--task-dir` 传 tasks 根目录，并用 `--operator` 选择目标；loader 传同一根目录及相对路径。当前 HTML 报告器解析 `levelN/<op>`，不要把裸 `<op>` 目录当评测根目录。N 沿用已有分类或记录新的分类，不由算子名猜测。原始任务根目录可作为只读 `task_dir`；需要补充时创建上述可交付任务目录，保留原有用例 ID 和内容，记录来源 commit、新增 ID 与覆盖映射。没有目标任务时按确认规格创建完整目录。两者使用相同测试契约，不增加工作流分支。`metadata/` 只在确需真实性能锚点时按当前版本格式使用，不制造 baseline。
 
-> 自建测试框架的组织范式参考主流评测集（如 cann-bench 的 golden.py / cases.yaml / run_evaluation.sh），但 golden 与用例由本仓 developer-test 实现，不依赖外部评测集。
+## 先验证接入
 
-### 分级功能用例
+先按 [最小接入自检](cannbench-integration.md) 验证 loader、golden 签名与参数绑定、代表输入和报告生成，再展开全量用例。接入自检通过只证明测试工程能工作，不是 NPU 精度通过。
 
-三级的**意图与规模**（本仓执行口径）：
+## cases.yaml
 
-| 级别 | 名称 | 规模/覆盖意图 | 用途 |
-|------|------|------|------|
-| L0 | 门槛用例 | 常规 shape 与 dtype，用例小、执行快（8-16 元素基础功能） | 开发时简单功能验证 |
-| L1 | 功能用例 | 典型 shape、竞品 shape（1K 元素典型场景） | 验证常用功能覆盖完全 |
-| L2 | 异常用例 | 超大 shape、空指针、极值/零值等异常输入 | 边界与异常输入验证 |
+例为双输入 Add 的数据格式，不代表目标算子的完整测试集：
 
-> 每级用什么覆盖策略选值见 [blackbox-design.md](blackbox-design.md)；分级用例可复用 `ascendc-st-design` 引擎产出的因子值表物化为本仓用例表。
+```yaml
+cases:
+- operator: Add
+  case_id: 1
+  input_shape: [[17, 33], [17, 33]]
+  dtype: [float32, float32]
+  attrs: {}
+  value_range: [[-1, 1], [-1, 1]]
+  note: 黑盒边界；非对齐
+```
 
-### golden 实现要点
+- `operator` 与 proto 一致，`case_id` 为目录内唯一整数；`input_shape`、`dtype`、`value_range` 按 proto 输入顺序对应。
+- optional 缺省使用 `null` 占位；TensorList 用嵌套列表，不能靠省略位置改变参数绑定。
+- 当前 loader 读取 `cases.yaml`，不是 `cases.csv`；如保留 CSV 展示文件要同步它，不能只改 CSV。
+- 不添加评测器不认识的 `expected_exception` 等字段并假设会执行。异常输入若无法用当前 loader/checker 表达，使用明确的补充 pytest 检查接口异常，单独报告结果，不混入正常精度用例的通过数。
+- 使用评测器的数据生成、golden 加载及 checker。特殊确定性输入若不能由现有字段表达，依据当前接口实现必要的补充测试，并复用相同 checker；不得默默退回 `allclose`。
 
-- golden 为 CPU 侧独立实现，不复用被测 Kernel 逻辑，保证比对独立性。
-- golden 输出作为精度比对基准，容差按 dtype 取 `ops-precision-standard` 标准。
-- 发现算子疑似缺陷时，以测试暴露问题并回退给算子开发角色，不自行改算子实现。
+## 执行入口
 
-## 模式 A：对齐评测集（有评测集）
+先确认 Python 环境及 `cann_bench_utils` 已准备好。官方 `scripts/run_evaluation.sh` 会准备辅助组件并安装候选包；本仓记录报告编号时直接使用同仓 CLI。以下路径均为绝对路径，`build_dir` 是位于 `$WORK_DIR` 的当前源码构建快照；`node_id`、`attempt` 和 `device_id` 来自本次任务，设备必须属于授权资源。
 
-评测集自带评测输入（如 cann-bench 的 `proto.yaml` / `golden.py` / `cases.yaml` / `metadata/<hw>.json`），提交方只读、不重写：
+```bash
+PYTHONPATH="$bench_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m kernel_eval.cli eval \
+  --bench-name cann --source-dir "$build_dir" --task-dir "$task_dir" \
+  --operator "$op" --device npu --device-id "$device_id" \
+  --reports-dir "$WORK_DIR/$node_id-评测-r$attempt" \
+  --eval-code "$node_id-精度-r$attempt" --eval-seed 0 --no-perf
+```
 
-| 评测集文件 | 提交方角色 |
-|-----------|-----------|
-| 算子原型定义（如 `proto.yaml`） | **契约真值源**——schema / dtype / attrs，提交注册须逐字对齐 |
-| golden（如 `golden.py`） | 评测集自带，不重写——精度比对基准 |
-| cases（如 `cases.yaml` / `cases.csv`） | 评测集自带，不重写——评测用例集 |
-| 性能基线（如 `metadata/<hardware>.json`） | 性能评分锚点（baseline_perf_us / t_hw_us） |
+命令完整保留原始日志和退出码；每次使用新报告目录。精度执行不需要性能采集，`--no-perf` 不等于关闭真实性检查。显式传设备避免默认占用全部卡；相同 Python 环境的候选安装不得并发互相覆盖。
 
-> 提交方不应在提交工程里另立 golden 或覆盖 cases——评测集评测时以自带的为准。
+开发期可加 `--case-id <整数>` 定位或穿刺，正式全量验收去掉该筛选。先核对实际发现数，再与报告执行数逐项对齐；零用例、漏算子、跳过或部分通过都不能称为全量通过。补充 pytest 也必须记录其数量、结果和日志。
 
-### 模式 A 自测脚本
+## 不同任务的交付边界
 
-提交工程的 `tests/` 目录为可选自测（评测集评测不依赖此目录，用于开发期本地验证）：
+- 测试工程准备：核对 proto/cases 可发现、golden 可调用、数据生成与断言可用，提供入口和用例映射；尚无 kernel 时不能伪报设备精度通过。
+- 算子开发：执行完整黑盒，记录当前源码构建与设备结果。
+- 白盒接入：在已有 cases 中加入源码分支用例，运行黑盒和白盒；归属明确的算子失败交修复，测试自身错误须修好。
+- 修复交付：黑盒、白盒及必要补充测试全量通过；已有有效证据的复用遵从当前 task，不使用旧代码日志证明新代码。
 
-| 文件 | 作用 |
-|------|------|
-| `verify_schema.py` | 验证 `torch.ops.<pkg>.<op>` schema 与算子原型定义一致、可调用 |
-| `run_local_eval.sh` | 封装评测集评测脚本（如 cann-bench `run_evaluation.sh --source-dir .. --operator <Op> --no-perf`）做本地精度快验 |
-| `whitebox_cases/` | 白盒补充用例（见 [whitebox-design.md](whitebox-design.md)） |
+官方 JSON/Markdown/HTML 报告保存原样，阶段记录给出带节点 ID 的结果路径、任务/源码/wheel/加载库版本和哈希、用例计数及失败归属。验收者只读证据，不重新构建或执行。示例 `test.sh` 仅运行示例 pytest，不代表目标算子已通过 cann-bench。
 
-### 模式 A 分级用例核对
+## 核对依据
 
-评测集 cases（如 cann-bench）每个算子约 20 条开放用例。测试设计的职责是**核对覆盖**而非从零设计：
+已核对 cann-bench `08d519c503843bce5fd4672ffa2259abeb22fb00`；实际运行记录所用版本。
 
-| 级别 | 评测集 cases 意图 | 提交方核对/补充 |
-|------|----------------------|----------------|
-| L0 门槛 | 常规 shape/dtype 基础功能 | 核对 cases 是否覆盖算子原型声明的所有 dtype |
-| L1 功能 | 典型 shape、常用场景 | 核对 shape 覆盖典型/竞品 shape |
-| L2 异常 | 超大 shape、极值/零值 | 核对边界/异常场景是否齐备 |
-
-> 覆盖核对方法见 [blackbox-design.md](blackbox-design.md)。
-
-## 白盒测试补全（两模式通用）
-
-- 以算子代码（`op_kernel/*.cpp`）与已有黑盒用例（模式 B 自建 / 模式 A 评测集 cases）为输入，基于源码枚举执行分支，补充未覆盖的分支（尾核/尾块、非对齐 DataCopyPad、多核边界、tilingkey 等）。
-- 白盒补充用例放 `tests/whitebox_cases/`，产出分支覆盖说明。
-- 具体方法见 [whitebox-design.md](whitebox-design.md)；分支覆盖达标阈值由 CP3 验收给定。
-
-## golden 同源纪律（两模式通用）
-
-- **模式 B**：golden 为 CPU 侧独立实现，不复用被测 Kernel；本仓仅一份 golden，由数据生成与 torch 通路校验共同引用，保持唯一。
-- **模式 A**：golden 由评测集提供，提交方不重写、不复用被测 kernel；自测时引用评测集 golden，不另立第二份。
-- **同源截断**：设备侧对输入所做的量化/截断，golden 必须对同一份数据做同样处理——整型造数据须先 round 再 clamp；fp16/bf16 须逐操作数先舍入到该 dtype 再计算。
-- 发现算子疑似缺陷时，以测试/评测结果暴露问题并回退给算子开发角色，不自行改算子实现。
-
-> 测试代码可执行、可复现是交付底线：模式 B 须能跑通 `run.sh`；模式 A 须能跑通评测集评测脚本或至少 `verify_schema.py`（schema 对齐）。
+- [examples/tasks/level2/add/proto.yaml](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/examples/tasks/level2/add/proto.yaml)
+- [examples/tasks/level2/add/cases.yaml](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/examples/tasks/level2/add/cases.yaml)
+- [docs/spec/cases_yaml_spec.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/docs/spec/cases_yaml_spec.md)
+- [src/kernel_eval/cli.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/cli.py)
+- [src/kernel_eval/report/report_generator.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/report/report_generator.py)

@@ -1,121 +1,42 @@
-# direct launch 工程结构与构建指南
+# 构建与版本核对
 
-> 本仓算子工程采用 direct launch 结构，权威样例见 direct launch 工程样例（如 cann-bench 仓 `examples/direct_launch_example/`）。本文给通用指南，具体模板文件见 `repo-op-templates`。
+## 构建输入
 
-## 工程结构
+记录 `source_dir`、cann-bench commit、Python 环境、CANN 路径和目标 SoC。环境信息来自本轮记录，不重复全面探测。构建在 `$WORK_DIR/<节点ID>-构建工程/` 的源码快照中执行，包含本次未提交代码，排除 `.cannbot/`、本轮工作目录、旧构建目录和二进制；记录与交付源码的对应哈希。算子计算、注册、打包代码、编译配置或工具链变化后更新快照并重建；仅测试用例变化不强制重建候选 wheel，但须记录与当前源码的对应关系。纯许可注释变更须核对完整差异、保留旧构建输入哈希及与当前源码的映射，不将旧 wheel 声称为新源码重新构建。
 
-单个提交为一个工程目录，可含一个或多个算子。结构以 direct launch 工程样例（如 cann-bench `examples/direct_launch_example/`）为准：
+官方脚本接受 `--soc=ascend910b`、`--soc=ascend910_93`、`--soc=ascend950`；前两者映射 `dav-2201`，950 映射 `dav-3510`。该值是编译平台名，不是性能 metadata 的硬件标签。根 `build.sh` 无参数时会自动检测；若检测无法确定平台，应先修正明确的环境/启动配置，保证评测器执行的 `bash build.sh` 也能复现，不能只验证一个外部手工命令。
 
-```
-generated_project/
-├── build.sh            # 编译入口（支持 --soc= / --install）
-├── setup.py            # wheel 打包（ABI3 + cmake_build）
-├── CMakeLists.txt      # 顶层编译配置
-├── cmake/              # 公共 CMake 模块（不感知算子）
-│   ├── func.cmake      # register_direct_launch_op 注册宏
-│   ├── ascend.cmake    # CANN/ASCEND 路径发现
-│   ├── python.cmake    # Python3 发现
-│   ├── torch.cmake     # Torch 发现
-│   └── torch_npu.cmake # torch_npu 发现
-├── cann_bench/
-│   └── __init__.py     # Python 包：from . import _C；导出 torch.ops.cann_bench.<op>
-├── csrc/
-│   ├── extension.cpp   # Python 扩展入口（PyInit__C，触发 TORCH_LIBRARY 静态初始化）
-│   └── ops/
-│       ├── CMakeLists.txt  # 自动发现算子子目录（file GLOB → add_subdirectory）
-│       └── <op>/
-│           ├── CMakeLists.txt      # 调用 register_direct_launch_op(<kernel_srcs> <plugin_srcs>)
-│           ├── op_kernel/
-│           │   ├── <op>_kernel.cpp # bisheng 编译：Kernel 类 + Tiling + extern "C" Launch
-│           │   └── <op>_launch.h   # Launch 声明（g++ 可见，供 plugin include）
-│           └── op_plugin/
-│               └── <op>_plugin.cpp # g++ 编译：TORCH_LIBRARY_FRAGMENT + Meta + NPU impl
-└── tests/              # 提交方自测脚本（评测不依赖，可选）
-```
+## 构建和导入
 
-### 算子自注册机制
-
-新增算子**无需修改任何公共 CMakeLists.txt**——只需在 `csrc/ops/` 下建算子子目录，写自己的 `CMakeLists.txt` 调用 `register_direct_launch_op()` 注册。顶层 `csrc/ops/CMakeLists.txt` 自动 `file(GLOB)` 发现所有算子子目录。
-
-## 双编译器分工
-
-direct launch 的核心是 **bisheng 与 g++ 双编译器**：
-
-| 编译对象 | 编译器 | 编译标志 | 产物 |
-|----------|--------|----------|------|
-| `op_kernel/*.cpp` | bisheng | `--npu-arch=<arch> -xasc` | `all_kernels_obj`（OBJECT 库） |
-| `op_plugin/*.cpp` | g++ | `-O3 -std=c++17` | `all_plugins_obj`（OBJECT 库） |
-| `extension.cpp` | g++ | 同上 | 合并入 `_C.abi3.so` |
-
-顶层 `CMakeLists.txt` 通过临时切换 `CMAKE_CXX_COMPILER` 为 bisheng 编译 kernel，再切回 g++ 编译 plugin，最后合并为 `_C.abi3.so` 并复制到 `cann_bench/` 目录。
-
-> **Kernel 文件用 `.cpp`**（非 `.asc`）。direct launch 用 bisheng `-xasc` 模式编译 `.cpp`，`<<<>>>` launch 语法在此模式下有效。
-
-### NPU 架构映射
-
-`build.sh` 自动检测 SoC 版本（优先 `torch.npu.get_device_name()`，兜底 `npu-smi info`），映射到 bisheng `--npu-arch` 值：
-
-| NPU_ARCH | bisheng `--npu-arch` | AICore 微架构 | 芯片 |
-|----------|----------------------|---------------|------|
-| `ascend910b` | `dav-2201` | c220 | 910B1/B2/B3/B4 |
-| `ascend910_93` | `dav-2201` | c220（共享 910B 微架构） | 910_93 系列 |
-| `ascend950` | `dav-3510` | c310 | 950 系列 |
-
-> 评测镜像 per-SoC（`cann_bench_utils` 为评测集强制依赖，含 SoC 相关 kernel），故提交工程须与评测镜像的 NPU_ARCH 一致。
-
-## 构建流程
+在已选定的隔离 Python 环境中执行，以下 `build_dir` 为本轮快照绝对路径，`soc` 为已确认编译平台：
 
 ```bash
-# 自动检测 SoC，编译 wheel
-bash build.sh
-
-# 指定 SoC
-bash build.sh --soc=ascend910b
-
-# 编译 + 安装（评测前安装到 Python 环境）
-bash build.sh --soc=ascend910b --install
+cd "$build_dir"
+bash build.sh --soc="$soc"
+python3 -m pip install dist/cann_bench*.whl --force-reinstall --no-deps
 ```
 
-`build.sh` 内部调用 `scripts/build_wheel.sh` → `setup.py` 的 `cmake_build` → `cmake` + `make`，产出 `dist/cann_bench-1.0.0-cp38-abi3-*.whl`。
+保留退出码和原始日志；wheel 应唯一且对应当前架构。示例 `build.sh --install` 也可安装，但须保证它调用的 pip 与评测 Python 是同一环境。不要在不同任务中并发重装同一个 `cann_bench` 包。
 
-## 评测器的编译契约
+从工程目录之外的新进程检查 `cann_bench.__file__`、`cann_bench._C.__file__`、目标 callable 与 schema，并记录实际加载文件哈希；不要让 `PYTHONPATH` 中旧工程或已安装 golden wheel 抢占导入。golden 自验证包与候选包同名，不能混用。Python 检查脚本使用 logging 输出。
 
-评测集评测器（如 cann-bench 的 `run_evaluation.sh --source-dir <dir>`）对提交工程的编译流程：
+评测器发现预构建 wheel 时可能跳过编译；因此必须保存所用 wheel 的真实编译证据和源码→wheel→加载库的关联；有效复用时引用原构建轮次，不虚构本次编译。仅见到一个 dist 文件不代表它来自当前代码。不要使用 `--skip-install` 掩盖 wheel 更新遗漏。
 
-1. 卸载已安装的 `cann_bench` 包（避免算子重复注册冲突，保留 `cann_bench_utils` 强制依赖）
-2. 在提交目录执行 `build.sh --install`（或等价 cmake 流程），编译 + 安装 wheel
-3. 编译失败 → `_compile.log` 收至 `reports/build/`，相关算子**整批计 0 分**
+## 依赖与常见故障
 
-> **整批编译失败处理**：一份提交多算子一起编译时，任一算子编译失败，本次提交涉及算子**全部按编译失败计 0**（不隔离、不补救、不改用户源码）。提交前务必 `bash build.sh` 验证全量编译通过。
+- 软件版本以当前 cann-bench 的 `pyproject.toml`、`uv.lock`、`requirements.txt` 和所选示例为依据；torch/torch_npu 必须匹配，不能单独升级 torch 破坏环境。
+- 保留示例 CMake 的 `CMAKE_LINK_DEPENDS_USE_LINKER FALSE`，避免较新 CMake 给 bisheng linker 传入不支持的参数。
+- 缺失 symbol、导入错误先核对目标架构、CANN 库路径、Python 环境和实际加载的 `_C`，不要把候选切换成 CPU/Torch 实现“修复”。
+- cann-bench 的 `cann_bench_utils` 是独立的评测辅助扩展，不能把它当作候选 `cann_bench` 或删除它；缺失时按其官方构建入口在准备阶段处理。
+- 官方评测会写编译日志并安装 wheel；使用快照和独立环境，避免污染交付源码或其它任务。构建失败直接保存原始错误，不临时挪走其它算子掩盖整批失败。
 
-## 稳定运行路径
+构建记录包含命令、工作目录、环境来源、退出码、源码/测试清单及哈希、wheel 与实际加载库路径及哈希。功能结果另由真实设备评测提供，`test.sh` 的示例 pytest 不是完整验收。
 
-编译产物与运行时导入的包**不是同一份**，两者不一致会让测试结果失真——现象是代码明明改了、测试却跑的是旧算子，容易被误判为代码缺陷。固定按下列路径运行：
+## 核对依据
 
-1. **先做算子符号探针，再跑测试**：导入包后检查目标算子符号是否存在（`hasattr(<pkg>, "<op>")` 或 `torch.ops.<pkg>.<op>` 可取），不通过则先 `bash build.sh --install` 恢复后重跑探针。探针不通过就跑出来的失败结果无效，不得作为功能/精度结论。
-2. **固定导入上下文**：优先从**工程本地上下文**运行（工作目录切到工程目录，导入本地产物），使结果与全局 site-packages 的状态解耦；确需全局包生效时（如评测器按已安装包评测），用 `bash build.sh --install` 恢复，并在复测前再跑一次探针。
-3. **同一轮内保持一致**：一轮验证中不混用两种导入来源；报告中记录本轮采用的运行上下文与探针结论。
+已核对 cann-bench `08d519c503843bce5fd4672ffa2259abeb22fb00`；运行时记录实际 checkout 版本，版本变化时核对相关接口。
 
-> 环境侧可能把已安装包回退为旧构建。发现符号消失时按上述路径恢复即可——这属环境现象，不是代码回归；判定依据是**产物与源码一致性**（见下方构建抖动条），不是"改了代码没生效"的直觉。
-
-### 构建抖动
-
-高并行度下 cmake 配置阶段可能瞬时失败，无确定触发条件。处理方式：
-
-- 重试 1~2 次；重试即成功的属构建抖动，不按代码错误定位。
-- 构建结论以「重试成功 + 产物与源码的一致性核对（时间戳 / 校验和）通过」为准，不以单次失败裁定。
-- 重试仍稳定失败的，才按编译错误处理（诊断信息在编译日志）。
-
-## 验证程度
-
-仅编译通过**不等于**验证通过，必须实际运行测试：
-
-| 项 | 要求 | 方法 |
-|----|------|------|
-| 独立编译 | `bash build.sh` 成功，无编译错误 | 提交前本地验证（瞬时失败按「构建抖动」重试） |
-| 算子符号探针 | 运行时导入的包含本次构建的算子 | 见「稳定运行路径」，每轮测试前先跑 |
-| schema 注册 | `torch.ops.cann_bench.<op>` 可调用，schema 与 `proto.yaml` 一致 | `python -c "import cann_bench; print(torch.ops.cann_bench.<op>)"` |
-| 精度验证 | 评测集 `run_evaluation.sh --no-perf`（如 cann-bench）用例全通过 | 提交前本地或 docker 验证 |
-| 性能验证 | 评测集 `run_evaluation.sh`（含 perf）HAP 有效 | 可选，正式提交前验证 |
-
-存在失败用例时验证结论判为失败，禁止标为通过。
+- [examples/direct_launch_example/build.sh](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/examples/direct_launch_example/build.sh)
+- [examples/direct_launch_example/setup.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/examples/direct_launch_example/setup.py)
+- [src/kernel_eval/data/package_manager.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/data/package_manager.py)
+- [docs/spec/submission_spec.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/docs/spec/submission_spec.md)

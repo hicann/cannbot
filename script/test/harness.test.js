@@ -12,8 +12,8 @@ import { assemblePlugins } from '../lib/plugin-bundle.js';
 
 const repository = resolve(import.meta.dirname, '../..');
 const plugin = 'ops-direct-invoke';
-const sourceDirectory = 'plugins-community/ops-direct-invoke-harness';
-const bundleDirectory = 'dist/plugins/ops-direct-invoke-harness';
+const sourceDirectory = 'plugins/ops-direct-invoke';
+const bundleDirectory = 'dist/plugins/ops-direct-invoke';
 const entry = 'ops-direct-invoke';
 const requirement = 'repo-requirement';
 const repoSkills = ['repo-knowledge', 'repo-build-guide', 'repo-op-templates', 'repo-coding-rules', 'repo-test-develop'];
@@ -56,11 +56,17 @@ for (const source of ['repository', 'package']) {
       for (const name of ['workflow-doc-templates', 'direct-invoke-code', 'direct-invoke-runtime', 'ops-direct-invoke-workflow', 'plugin-pr-submit', 'plugin-perf-iteration', 'plugin-experience-summary', 'infra-gitcode-api']) {
         assert.equal(existsSync(join(skills, name)), false, name);
       }
-      const tasks = join(skills, entry, 'tasks');
+      for (const path of ['tasks/ascendc', 'tasks/common', 'workflows/ascendc']) {
+        assert.ok(lstatSync(join(skills, entry, path)).isDirectory(), path);
+      }
+      for (const path of ['tasks/cannbot-dsl', 'workflows/cannbot-dsl', 'workflows/common', 'workflows/registry.csv']) {
+        assert.equal(existsSync(join(skills, entry, path)), false, path);
+      }
+      const tasks = join(skills, entry, 'tasks/ascendc');
       assert.equal(readdirSync(tasks).length, 8);
       for (const name of readdirSync(tasks)) assert.doesNotMatch(name, /^\d/);
-      const templates = join(skills, entry, 'templates/docs');
-      const sourceTemplates = join(repository, sourceDirectory, 'skills', entry, 'templates/docs');
+      const templates = join(skills, entry, 'templates');
+      const sourceTemplates = join(repository, sourceDirectory, 'skills', entry, 'templates');
       assert.deepEqual(readdirSync(templates).sort(), readdirSync(sourceTemplates).sort());
       for (const name of ['测试执行记录.md', '验收报告.md']) {
         assert.ok(existsSync(join(templates, name)), name);
@@ -69,13 +75,12 @@ for (const source of ['repository', 'package']) {
         assert.doesNotMatch(template, /^\d/);
         assert.equal(readFileSync(join(templates, template), 'utf8'), readFileSync(join(sourceTemplates, template), 'utf8'));
       }
-      const registryPath = join(skills, entry, 'templates/workflows/registry.csv');
-      const registry = csvValue(registryPath);
-      assert.ok(registry.length);
-      for (const template of registry) {
+      const guide = workflowGuide(join(skills, entry), box.root);
+      assert.ok(guide.length);
+      for (const template of guide) {
         assert.ok(template.use_when.length);
-        const installed = join(skills, entry, 'templates/workflows', template.file);
-        const original = join(repository, sourceDirectory, 'skills', entry, 'templates/workflows', template.file);
+        const installed = join(skills, entry, 'workflows', template.file);
+        const original = join(repository, sourceDirectory, 'skills', entry, 'workflows', template.file);
         assert.equal(readFileSync(installed, 'utf8'), readFileSync(original, 'utf8'));
       }
       for (const name of ['知识搜集.yaml', '白盒测试设计.yaml', '算子开发.yaml', '文档准备.yaml']) {
@@ -90,10 +95,10 @@ for (const source of ['repository', 'package']) {
         }
       }
       assert.deepEqual(readdirSync(skills).filter((name) => name.startsWith('workflow-cp')), []);
-      for (const name of ['prompts', 'workflows']) {
+      for (const name of ['prompts', 'templates/docs', 'templates/workflows']) {
         assert.equal(existsSync(join(skills, entry, name)), false, name);
       }
-      for (const name of ['assemble_workflow.py', 'run_workflow.py']) assert.ok(existsSync(join(skills, entry, 'scripts', name)));
+      for (const name of ['generate_workflow_guide.py', 'assemble_workflow.py', 'run_workflow.py']) assert.ok(existsSync(join(skills, entry, 'scripts', name)));
       const agents = join(box.target, tool === 'claude' ? '.claude' : tool === 'codex' ? '.codex' : '.opencode', 'agents');
       const extension = tool === 'codex' ? '.toml' : '.md';
       assert.deepEqual(readdirSync(agents).filter((name) => name.startsWith('ops-direct-invoke-')).sort(),
@@ -144,16 +149,16 @@ test('harness source init delegates to the unified installer', (t) => {
   const result = spawnSync('bash', [join(repository, sourceDirectory, 'init.sh'), 'project', 'codex', box.target],
     { env: box.env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.ok(existsSync(join(box.target, '.agents/skills', entry, 'tasks/知识搜集.yaml')));
+  assert.ok(existsSync(join(box.target, '.agents/skills', entry, 'tasks/ascendc/知识搜集.yaml')));
 });
 
 function prepare(box, skills, input = 'template') {
   const work = join(box.target, '.cannbot/AddExample/workflow1');
   const root = join(skills, entry);
-  const registry = csvValue(join(root, 'templates/workflows/registry.csv'));
-  const selected = registry.find((template) => template.file === 'basic.yaml');
+  const guide = workflowGuide(root, box.root);
+  const selected = guide.find((template) => template.file === 'ascendc/basic.yaml');
   assert.ok(selected);
-  const template = join(root, 'templates/workflows', selected.file);
+  const template = join(root, 'workflows', selected.file);
   const complete = join(box.root, 'assembled.yaml');
   if (input === 'yaml') {
     const result = spawnSync('python3', [join(root, 'scripts/assemble_workflow.py'),
@@ -183,12 +188,12 @@ function state(prepared) {
 }
 
 for (const source of ['repository', 'package']) for (const input of ['template', 'yaml']) {
-  test(`public harness executes registered workflow from ${source} via --${input}`, (t) => {
+  test(`public harness executes discovered workflow from ${source} via --${input}`, (t) => {
     const box = sandbox(t);
     const skills = install(box, 'codex', source);
     const prepared = prepare(box, skills, input);
     const original = readFileSync(prepared.template, 'utf8');
-    const result = simulate(box, prepared, { '3': ['executed', 'fail', 'executed', 'pass'] });
+    const result = simulate(box, prepared, { '3': ['executed', '$VERDICT:fail', 'executed', '$VERDICT:pass'] });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.equal(readFileSync(prepared.template, 'utf8'), original);
     const current = state(prepared);
@@ -211,7 +216,7 @@ test('task verifier exhaustion blocks dependents; restart does not invent recove
   const box = sandbox(t);
   const skills = install(box, 'codex', 'repository');
   const prepared = prepare(box, skills);
-  const failed = simulate(box, prepared, { '0.0': Array(4).fill(['executed', 'fail']).flat() });
+  const failed = simulate(box, prepared, { '0.0': Array(4).fill(['executed', '$VERDICT:fail']).flat() });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.equal(state(prepared).tasks['0.0'].status, 'fail');
   for (const tid of ['1', '2', '3', '4', '5']) assert.equal(state(prepared).tasks[tid].status, 'pending');
@@ -230,7 +235,7 @@ test('operator verification waits for tests and blocks downstream delivery on fa
   const tests = nodes.find((node) => node.title === '测试工程开发');
   assert.ok(developer.depends_on.includes(tests.id));
   assert.equal(nodes.some((node) => node.title === '代码检视'), false);
-  const failed = simulate(box, prepared, { [developer.id]: Array(4).fill(['executed', 'fail']).flat() });
+  const failed = simulate(box, prepared, { [developer.id]: Array(4).fill(['executed', '$VERDICT:fail']).flat() });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.equal(state(prepared).tasks[tests.id].status, 'pass');
   assert.equal(state(prepared).tasks[developer.id].status, 'fail');
@@ -252,7 +257,7 @@ test('a new workflow under the same task preserves the previous failed run', (t)
     current.run[current.run.indexOf('--yaml') + 1] = definition;
     current.run[current.run.indexOf('--work-dir') + 1] = current.work;
   }
-  const failed = simulate(box, first, { '0.0': Array(4).fill(['executed', 'fail']).flat() });
+  const failed = simulate(box, first, { '0.0': Array(4).fill(['executed', '$VERDICT:fail']).flat() });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   const previousState = readFileSync(join(first.work, '.workflow/status.json'), 'utf8');
   const previousYaml = readFileSync(join(first.work, 'workflow1.yaml'), 'utf8');
@@ -280,10 +285,18 @@ function csvValue(file) {
   return JSON.parse(result.stdout);
 }
 
+function workflowGuide(root, directory) {
+  const output = join(directory, 'workflow-guide.csv');
+  const result = spawnSync('python3', [join(root, 'scripts/generate_workflow_guide.py'), '--output', output],
+    { cwd: directory, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return csvValue(output);
+}
+
 function taskFixture(box, name) {
-  const task = yamlValue(join(entryScripts, '../tasks/知识搜集.yaml'));
+  const task = yamlValue(join(entryScripts, '../tasks/ascendc/知识搜集.yaml'));
   for (const field of ['goal', 'approach', 'procedure', 'acceptance', 'out_of_scope']) {
-    for (const [key, value] of Object.entries(task.variables)) {
+    for (const [key, value] of Object.entries(task.variables ?? {})) {
       task[field] = task[field].map((item) => item.replaceAll(`{{var:${key}}}`, value));
     }
   }
@@ -400,7 +413,7 @@ test('ops-direct-invoke assembles and installs from a self-contained source layo
   // Only the common framework and domain Skill repository are shared with the source tree.
   symlinkSync(join(repository, 'harness'), join(isolated, 'harness'), 'dir');
   symlinkSync(join(repository, 'vendor'), join(isolated, 'vendor'), 'dir');
-  assert.equal(existsSync(join(isolated, 'plugins/ops-direct-invoke')), false);
+  assert.equal(existsSync(join(isolated, 'plugins-community')), false);
   const bundles = assemblePlugins(isolated, join(box.root, 'dist'), [basename(sourceDirectory)]);
   assert.equal(bundles.length, 1);
   for (const name of localKnowledge) assert.ok(existsSync(join(bundles[0].destination, 'skills', name, 'SKILL.md')));
@@ -416,16 +429,16 @@ test('ops-direct-invoke assembles and installs from a self-contained source layo
 });
 
 
-test('registered workflow templates reproduce from tasks and reference installed document templates', (t) => {
+test('discovered workflow templates reproduce from tasks and reference installed document templates', (t) => {
   const box = sandbox(t);
   const root = join(repository, sourceDirectory, 'skills', entry);
-  const registry = csvValue(join(root, 'templates/workflows/registry.csv'));
-  assert.equal(new Set(registry.map((item) => item.file)).size, registry.length);
-  assert.deepEqual(registry.map((item) => item.file).sort(),
-    readdirSync(join(root, 'templates/workflows')).filter((name) => name !== 'registry.csv').sort());
-  for (const template of registry) {
+  const guide = workflowGuide(root, box.root);
+  assert.equal(new Set(guide.map((item) => item.file)).size, guide.length);
+  assert.deepEqual(guide.map((item) => item.file).sort(),
+    readdirSync(join(root, 'workflows'), { recursive: true }).filter((name) => name.endsWith('.yaml')).sort());
+  for (const template of guide) {
     const output = join(box.root, template.file);
-    const path = join(root, 'templates/workflows', template.file);
+    const path = join(root, 'workflows', template.file);
     const reference = yamlValue(path);
     const result = spawnSync('python3', [join(root, 'scripts/assemble_workflow.py'), '--output', output,
       '--template', path], { encoding: 'utf8' });
@@ -435,7 +448,8 @@ test('registered workflow templates reproduce from tasks and reference installed
       reference.nodes.map(({ id, depends_on, max_retries }) => ({ id, depends_on, max_retries })));
     for (const [index, node] of expected.nodes.entries()) {
       const ref = reference.nodes[index];
-      assert.deepEqual(Object.keys(ref).sort(), ['depends_on', 'id', 'max_retries', 'variables', 'yaml']);
+      assert.deepEqual(Object.keys(ref).filter((key) => key !== 'variables').sort(),
+        ['depends_on', 'id', 'max_retries', 'yaml']);
       const task = yamlValue(resolve(dirname(path), ref.yaml));
       assert.equal(task.max_retries, undefined);
       assert.deepEqual(node.goal, task.goal);
@@ -444,7 +458,7 @@ test('registered workflow templates reproduce from tasks and reference installed
       assert.equal(node.variables, undefined);
     }
     for (const node of expected.nodes) {
-      for (const match of JSON.stringify(node).matchAll(/ops-direct-invoke\/(templates\/docs\/[^`"\\\s/，。]+\.md)/g)) {
+      for (const match of JSON.stringify(node).matchAll(/ops-direct-invoke\/(templates\/[^`"\\\s/，。]+\.md)/g)) {
         assert.ok(existsSync(join(root, match[1])), match[1]);
       }
     }
@@ -455,9 +469,9 @@ test('launcher requires one workflow input and rejects unavailable or escaped te
   const box = sandbox(t);
   for (const [args, error] of [
     [[], /required/],
-    [['--yaml', 'custom.yaml', '--template', 'basic.yaml'], /not allowed/],
+    [['--yaml', 'custom.yaml', '--template', 'ascendc/basic.yaml'], /not allowed/],
     [['--template', 'missing.yaml'], /No such file/],
-    [['--template', '../docs/知识搜集.md'], /must stay inside/],
+    [['--template', '../templates/知识搜集.md'], /must stay inside/],
     [['--template', '.'], /must be a file/],
   ]) {
     const result = spawnSync('python3', [join(entryScripts, 'run_workflow.py'), ...args,

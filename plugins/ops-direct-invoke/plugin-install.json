@@ -14,6 +14,11 @@
       "name": "ops-tensor",
       "repository": "https://gitcode.com/cann/ops-tensor.git",
       "recursive": true
+    },
+    {
+      "name": "cann-bench",
+      "repository": "https://gitcode.com/cann/cann-bench.git",
+      "ref": "master"
     }
   ]
 }

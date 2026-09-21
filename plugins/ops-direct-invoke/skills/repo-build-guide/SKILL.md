@@ -1,16 +1,10 @@
 ---
 name: repo-build-guide
-description: 仓库代码结构与构建指南，介绍本仓算子代码的目录/文件结构与编译验证方法。触发：了解算子代码结构、搭建工程、编译与运行验证时加载。
+description: 构建可供 CANN Bench 评测的 Ascend C 直调源码和 cann_bench wheel，检查真实加载路径与版本。编译、安装、调试构建问题时使用。
 ---
 
-# 仓库代码结构与构建指南
+# 仓库构建指南
 
-本 skill 帮助快速了解本仓算子工程的**代码结构**（目录与文件组织）与**编译验证方法**。
+本仓采用 cann-bench `examples/direct_launch_example` 工程：bisheng 编译 kernel，g++ 编译注册包装，链接 `_C.abi3.so` 并生成 `dist/cann_bench*.whl`。评测器可从源码根目录调用 `bash build.sh`。
 
-本仓算子工程采用 direct launch 结构：bisheng 编译 kernel、g++ 编译 plugin、合并为 `_C.abi3.so` 装入 wheel 包。结构与构建方法见 references。
-
-## 路由
-
-| 场景 | 加载 |
-|------|------|
-| 了解 direct launch 工程结构、编译配置、构建流程与验证程度 | [references/build-guide.md](references/build-guide.md) |
+读取 [构建与验证](references/build-guide.md)，按当前环境、源码快照和目标芯片构建。构建成功、wheel 可导入与算子功能通过分别记录，不混为一个结论。

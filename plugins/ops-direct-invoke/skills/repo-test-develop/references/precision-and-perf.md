@@ -1,124 +1,36 @@
-# 精度测试标准与性能采集方法
+# 精度与评分口径
 
-> 按需求文档的**评测来源模式**分两条路径：
-> - **模式 B（无评测集，默认）**：精度按需求文档声明口径（缺声明时取 `ops-precision-standard`）自检，性能用 `ops-profiling`（msprof op）自采。
-> - **模式 A（有评测集）**：评测框架的精度判定口径与 HAP 评分为最终裁定，性能由评测集评测脚本内置 profiler 完成。
->
-> 两模式的精度判定口径均以测试方案的**精度判定口径表**为取值处，并按下方「权威精度断言」实例化为可执行硬断言。
->
-> 测试工程搭建见 [test-framework.md](test-framework.md)。
+## 精度执行
 
-## 精度测试
+本仓用 CANN 后端注册的 `relative_error` checker。标准来源是所用版本的 `src/kernel_eval/utils/thresholds.py`、`compare.py`、`checkers/relative_error_checker.py` 及算子 proto 中的 `precision_thresholds` 配置；在测试方案中记录实际生效配置，不另写近似判定器。
 
-### 模式 B：自建精度测试
+已核对版本的正常浮点值域采用 MERE 与 MARE 双条件，MARE 门槛是 threshold 的 10 倍，均使用严格小于；常用 dtype 基础 threshold 如下，算子覆写和实际配置必须另行核对：
 
-**执行流程**：
+| dtype | threshold |
+|-------|-----------|
+| float16 | `2**-10` |
+| bfloat16 | `2**-7` |
+| float32 | `2**-13` |
+| 整型 | 精确匹配 |
 
-1. 取测试方案精度判定口径表的判定指标与阈值（需求文档未声明的部分，加载 `ops-precision-standard` 取对应类别标准）。
-2. 构造精度测试用例：覆盖声明的所有 dtype，每个 dtype 至少含常规 shape 与边界 shape。
-3. 在 NPU 上运行精度测试，与 CPU golden 比对。
-4. 记录每个 (dtype, shape) 组合的实际误差（rtol、atol、max_error）。
-5. 对照标准判定是否达标。
+这张表不构成完整判定。checker 还处理输出结构/连续性、小值域、相消、NaN/Inf 等；不能只实现上述两个指标或 `torch.allclose` 就宣布等价。浮点判定使用评测器提供的高精度 golden 与需要时的同精度 CPU 对照，输入生成和 dtype 处理交给现有实现。
 
-**默认精度标准**（权威值以 `ops-precision-standard` 为准）：
+逐输出保留实际生效的指标、阈值、实测统计与 pass/fail；保留原始机器可读报告，不把内部 checker 结果改写为更宽松的自建结论。用户标准更严格时另做附加断言；与正式评测契约冲突时在需求阶段明确差异，不放宽 cann-bench 标准以换取通过。
 
-| 数据类型 | rtol | atol | 说明 |
-|---------|------|------|------|
-| FP32 | 1e-5 | 1e-5 | 默认标准 |
-| FP16 | 1e-3 | 1e-3 | 半精度宽松标准 |
-| BF16 | 1e-2 | 1e-2 | BF16 更宽松 |
+## 性能与跑分
 
-### 模式 A：评测集评测口径（最终裁定）
+`--no-perf` 适用于功能验证；不能据此报告 HAP、性能通过或最终综合分达标。任务明确要求跑分时，使用同版本评测器开启性能采集，保留硬件标签、metadata 版本、每例候选耗时、baseline 与硬件锚点及真实报告。
 
-评测集评测器（如 cann-bench 的 `run_evaluation.sh`）执行 cases 全量用例，候选输出与 golden 比对，按框架的精度判定口径裁定每用例通过/失败。
+`metadata/<hardware>.json` 保存 `baseline_perf_us` 和 `t_hw_us`。`examples/tasks` 的零值 fixture 不能用于真实性能比较，补充黑盒/白盒缺少锚点时不能伪造得分；官方原始任务的跑分与扩展用例回归分别记录，不能用扩展集合冒充官方分数。
 
-**执行方式**：
+HAP 是硬件锚定评分而非 speedup，不能擅自给所有算子添加 HAP ≥ 0.5、带宽差 20% 等门槛。是否有性能硬目标由需求决定，流程未安排性能测量时仅声明功能验证与可评测工程交付，不宣称性能达标。
 
-```bash
-# 仅精度验证（不采集性能）
-<评测集>/scripts/run_evaluation.sh --source-dir <提交目录> --operator <Op> --no-perf
-```
+## 核对依据
 
-**模式 A 下评测框架的判定口径为最终裁定**，开发期自建容差不能替代它。
+已核对 cann-bench `08d519c503843bce5fd4672ffa2259abeb22fb00`；实际运行记录所用版本。
 
-### 权威精度断言（两模式通用，测试工程必备件）
-
-测试方案的精度判定口径表（2.1 §2.3）一经通过，测试工程即按表**实例化为可执行硬断言**，不等评测或验收时才揭晓：
-
-1. **逐输出张量按表实现判定函数**：指标与阈值取口径表的取值，不自行放宽、不自行换指标；整型与浮点输出各按各自口径判定，不用一套容差通吃。
-2. **逐用例产出对照数据**：每条用例输出「输出张量 / 判定指标 / 实测值 / 阈值 / 结论」，实测值随测试结果落盘，供验收环节复核，不只输出 pass/fail。
-3. **断言即门禁**：权威口径不达标即判 FAIL，不得因「自建容差内」放行。
-4. **辅助容差降级为交叉核对**：混合容差（atol/rtol）等自建口径可保留作交叉核对；与权威口径结论不一致时以权威口径为准，并在结果中标注该分叉。
-
-> **口径分叉自检**：自建的宽松容差与框架的严格口径会对同一份误差给出相反结论（如相对误差 2.5e-04：按 rtol=1e-3 判过、按平均相对误差 < 2^-13 ≈ 1.22e-04 判挂）——只跑自建容差会把失分点推迟到评测阶段才暴露。权威口径的溯源方法见 `repo-knowledge` 的 evaluation-contract.md。
-
-> **数值路径改动的回归门**：任何改变数值计算路径的改动（近似替换、中间精度降级、指令/转换链变更）落地后，必须重跑权威精度断言；不达标即回退该改动，不得以「自建容差内」放行。
-
-### 精度不达标处理（两模式通用）
-
-先判断问题类型，再交回对应角色：
-
-| 特征 | 问题类型 |
-|------|---------|
-| 某些元素输出全 0 / NaN，或仅特定核数据错误，或 Padding 区域参与计算 | 代码 bug |
-| FP32 好但 FP16/BF16 差很多，或误差随规模线性增长，或所有 dtype 均匀不足 | 精度问题（混合精度/归约顺序/数值稳定性） |
-
-调用 `ascendc-precision-debug` 诊断根因，在报告中记录问题类型与诊断结论。
-
-### 同源与特殊用例纪律（两模式通用）
-
-- **模式 B**：golden 为 CPU 侧独立实现，不复用被测 Kernel；本仓仅一份 golden，保持唯一。
-- **模式 A**：golden 由评测集提供，提交方不重写，自测时引用评测集 golden，不另立第二份。
-- **同源截断**：设备侧对输入所做的量化/截断，golden 必须对同一份数据做同样处理——整型造数据须先 round 再 clamp；fp16/bf16 须逐操作数先舍入到该 dtype 再计算。
-- **特殊输入语义**：0 维标量张量（shape `[]`）与空 tensor（shape 含 0）是不同用例；特殊值 `±0/±inf/nan` 原样注入，不有限化为普通数。
-
-## 性能采集
-
-### 模式 B：自建性能采集
-
-用测试工程搭建的性能采集框架跑出性能数据，覆盖需求关注的 shape/dtype。通过 `ops-profiling` 执行 msprof op 采集、解读 CSV 指标、做达标判定。
-
-**关注指标**：
-
-- Task Duration（实际耗时与理论耗时对比，差距 <20% 为达标参考）
-- 主导流水 / PipeUtilization 分布是否与算子类型匹配
-- 核间负载均衡（各核耗时差异 <10%）
-- Bank conflict 占比（<5%）、头开销占比（<10%）
-
-**性能目标**：以需求文档的可量化指标（耗时/带宽/利用率）表述；无明确目标时以瓶颈分析结论判定。
-
-### 模式 A：HAP 评测（最终裁定）
-
-评测集评测器对通过精度的用例采集性能，按 HAP 公式打分（详见 `repo-knowledge` 的 evaluation-contract.md）：
-
-$$
-\text{HAP}_i = \frac{T_{\text{baseline},i} - T_{\text{HW},i}}{(T_{\text{cand},i} - T_{\text{HW},i}) + (T_{\text{baseline},i} - T_{\text{HW},i})}
-$$
-
-- $T_{HW}$ = 评测集性能基线的 `t_hw_us`
-- $T_{baseline}$ = `baseline_perf_us`
-- $T_{cand}$ = 候选 kernel 实测耗时
-
-**执行方式**：
-
-```bash
-# 精度 + 性能（含 HAP）
-<评测集>/scripts/run_evaluation.sh --source-dir <提交目录> --operator <Op>
-```
-
-性能报告输出到 `reports/`（如 `cann_performance_eval_*.json`，各用例 HAP 得分、综合性能分）。
-
-**HAP 是饱和型指标**：
-
-| HAP | 含义 | 开发目标 |
-|-----|------|---------|
-| < 0.5 | 低于 baseline | 不达标，须优化 |
-| = 0.5 | 等于 baseline | 最低可接受 |
-| > 0.5 | 优于 baseline | 达标 |
-| ≥ 1 | 达到/超过硬件理论上界 | 优秀（允许超 100 分） |
-
-> 模式 A 下需求文档的性能预期以 HAP 阈值表述（如「HAP ≥ 0.5」即性能不低于 baseline）。
-
-### 性能瓶颈定位（两模式通用）
-
-性能瓶颈定位后，若根因落在上游 Tiling/切分/架构，回退给设计角色，不自行改设计决策。开发期可用 `ops-profiling` 辅助瓶颈分析。
+- [src/kernel_eval/utils/thresholds.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/utils/thresholds.py)
+- [src/kernel_eval/utils/compare.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/utils/compare.py)
+- [src/kernel_eval/checkers/relative_error_checker.py](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/src/kernel_eval/checkers/relative_error_checker.py)
+- [docs/design/precision_comparison_design.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/docs/design/precision_comparison_design.md)
+- [README.md](https://gitcode.com/cann/cann-bench/blob/08d519c503843bce5fd4672ffa2259abeb22fb00/README.md)

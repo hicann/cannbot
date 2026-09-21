@@ -26,16 +26,16 @@ Open Software License Agreement Version 2.0 and any license notices included
 with their content; see the package `LICENSE` overview and the license files in
 each `dist/plugins/<plugin>/` directory.
 
-All clients use the same Node installer. Each source `init.sh` forwards the selected plugin, source repository, tool, and target to the CLI, which links Skills to the submodule. npm installation copies the bundled Skills. Plugin-specific dependency repositories are declared in `plugin-install.json`.
+All clients use the same Node installer. Each source `init.sh` forwards the selected plugin, source repository, tool, and target to the CLI, which links Skills to their declared source directories. npm installation copies the bundled Skills. Plugin-specific dependency repositories are declared in `plugin-install.json`.
 
 See [the workflow installation and usage guide](docs/cannbot-workflows.md) for all supported commands and prompt examples.
 
 Community plugins with a `plugin-sources.json` are also assembled into the package. To install ops-direct-invoke from its source directory:
 
 ```bash
-node script/bin/cannbot.js install ops-direct-invoke --source "$PWD" --plugin-dir plugins-community/ops-direct-invoke-harness --tool codex --target /absolute/project
+node script/bin/cannbot.js install ops-direct-invoke --source "$PWD" --tool codex --target /absolute/project
 ```
 
-`--override-skills /absolute/overrides` replaces selected existing repo-* Skills from same-named directories. Document templates are maintained under ops-direct-invoke/templates/docs; assembled workflow templates live in templates/workflows and are listed with usage conditions in templates/workflows/registry.yaml. The workflow entry and scheduler cannot be replaced through this option. See the ops-direct-invoke README for its task assembly rules and current public-interface limitations.
+`--override-skills /absolute/overrides` replaces selected existing repo-* Skills from same-named directories. Document templates are maintained under ops-direct-invoke/templates; workflow reference graphs live in workflows/ascendc and carry use_when metadata. Run scripts/generate_workflow_guide.py with --output in the work directory before selecting a template from the generated guide. The workflow entry and scheduler cannot be replaced through this option. See the ops-direct-invoke README for its task assembly rules and current public-interface limitations.
 
 `--plugin-dir` selects a specific plugin directory when its folder name differs from its manifest name. Relative paths resolve from `--source` for source installs, or the installer package root for packaged installs. The requested install ID must match the manifest; installed assets and registry records always use that ID.
