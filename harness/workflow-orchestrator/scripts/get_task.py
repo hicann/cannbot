@@ -517,8 +517,8 @@ class PromptContext:
 def build_prompt(node, phase, work_dir, user_prompt, context=None):
     """构建 execute 或 verify 阶段提示词。
 
-    execute 阶段含 Approach 与 executed 协议句；verify 阶段嵌入 verdict 回调命令，
-    以裁决文件为权威并要求 pass/fail 文本兜底回复；advice 仅 execute 阶段注入。
+    execute 阶段含 Approach；verify 阶段嵌入 verdict 回调命令，
+    以裁决文件为唯一依据；advice 仅 execute 阶段注入。
     system_prompt 配置后以 "$SYSTEM_PROMPT=" 变量行注入两个阶段。
     task_id 缺省取 node["id"]；子图子任务须传命名空间全名（父/子）供 verdict 命令使用。
     """
@@ -542,9 +542,7 @@ def build_prompt(node, phase, work_dir, user_prompt, context=None):
     elif phase == "verify" and "procedure" in node:
         parts.append(block("Procedure", node["procedure"]))
     parts += [block("Acceptance", node["acceptance"]), block("Out-of-Scope", node["out_of_scope"])]
-    if phase == "execute":
-        parts.append("After finishing, reply with only: executed")
-    else:
+    if phase == "verify":
         pass_cmd = 'python3 "%s" --work-dir "%s" --task-id "%s"' % (
             os.path.join(orch.SCRIPTS_DIR, "verdict_pass.py"), work_dir, tid)
         fail_cmd = ('python3 "%s" --work-dir "%s" --task-id "%s"'
@@ -552,7 +550,7 @@ def build_prompt(node, phase, work_dir, user_prompt, context=None):
             os.path.join(orch.SCRIPTS_DIR, "verdict_fail.py"), work_dir, tid)
         parts.append("Report your verdict by running exactly one of:\n  %s\n  %s"
                      % (pass_cmd, fail_cmd))
-        parts.append("Then reply with only: pass or fail")
+        parts.append("The verdict file is required; a text reply is not a verdict.")
     return "\n".join(parts)
 
 

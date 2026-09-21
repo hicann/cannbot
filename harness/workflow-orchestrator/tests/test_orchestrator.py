@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Blackbox tests for the workflow-orchestrator skill.
 
 These tests exercise ``orchestrator.py`` only through its documented CLI in
@@ -295,7 +303,7 @@ class OrchestratorTest(unittest.TestCase):
     def test_retry_then_pass(self):
         node = _node("t1", max_retries=1)
         code, out, wd = self._run(
-            nodes=[node], dry_replies={"t1": ["executed", "fail", "executed", "pass"]},
+            nodes=[node], dry_replies={"t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"]},
         )
         self.assertEqual(code, 0, out)
         task = read_status(wd)["tasks"]["t1"]
@@ -305,7 +313,7 @@ class OrchestratorTest(unittest.TestCase):
     def test_fail_exhausts_budget(self):
         node = _node("t1", max_retries=1)
         code, out, wd = self._run(
-            nodes=[node], dry_replies={"t1": ["executed", "fail", "executed", "fail"]},
+            nodes=[node], dry_replies={"t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:fail"]},
         )
         self.assertEqual(code, 1, out)
         task = read_status(wd)["tasks"]["t1"]
@@ -356,8 +364,8 @@ class OrchestratorTest(unittest.TestCase):
                  _node("b", depends_on=["a"], max_retries=0,
                        on_exhaust="rollback", rollback_to="a")]
         code, out, wd = self._run(nodes=nodes, max_rollbacks=0,
-                                  dry_replies={"a": ["executed", "pass"],
-                                               "b": ["executed", "fail"]})
+                                  dry_replies={"a": ["executed", "$VERDICT:pass"],
+                                               "b": ["executed", "$VERDICT:fail"]})
         self.assertEqual(code, 1, out)
         self.assertIn("回滚预算耗尽", out)
         self.assertIn("工作流卡住", out)
@@ -381,9 +389,9 @@ class OrchestratorTest(unittest.TestCase):
                   on_exhaust="rollback", rollback_to="a"),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass"],
-            "b": ["executed", "pass", "executed", "pass"],
-            "c": ["executed", "fail", "executed", "pass"],
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "b": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "c": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies,
                                   pre_files={"seed.txt": "v1\n"})
@@ -419,9 +427,9 @@ class OrchestratorTest(unittest.TestCase):
             _node("d", depends_on=["a"]),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass"],
-            "b": ["executed", "fail", "executed", "pass"],
-            "d": ["$SLEEP:2", "executed", "pass"],  # 首轮 execute 慢；executed 态被重置后重做
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
+            "d": ["$SLEEP:2", "executed", "$VERDICT:pass"],  # 首轮 execute 慢；executed 态被重置后重做
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
         self.assertEqual(code, 0, out)
@@ -456,9 +464,9 @@ class OrchestratorTest(unittest.TestCase):
         nodes = [_node("pre"),
                  {"id": "sg", "task_type": "subgraph", "file": "sub.yaml", "depends_on": ["pre"]}]
         replies = {
-            "pre": ["executed", "pass"],
-            "sg/x": ["executed", "pass", "executed", "pass"],
-            "sg/y": ["executed", "fail", "executed", "pass"],
+            "pre": ["executed", "$VERDICT:pass"],
+            "sg/x": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "sg/y": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies,
                                   pre_files={"sub.yaml": yaml.safe_dump(sub)})
@@ -491,9 +499,9 @@ class OrchestratorTest(unittest.TestCase):
             _node("c", depends_on=["a"]),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass"],
-            "b": ["$SLEEP:2", "fail", "executed", "pass"],  # 首轮 execute 慢，让 c 先 pass
-            "c": ["executed", "pass", "executed", "pass"],
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "b": ["$SLEEP:2", "$VERDICT:fail", "executed", "$VERDICT:pass"],  # 首轮 execute 慢，让 c 先 pass
+            "c": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
         self.assertEqual(code, 0, out)
@@ -515,10 +523,10 @@ class OrchestratorTest(unittest.TestCase):
                   on_exhaust="rollback", rollback_to="a"),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass"],
-            "sg/k": ["executed", "pass", "executed", "pass"],
-            "x": ["$SLEEP:2", "fail", "executed", "pass"],  # 首轮 execute 慢，让 x2 先耗尽
-            "x2": ["executed", "fail", "executed", "pass"],
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "sg/k": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "x": ["$SLEEP:2", "$VERDICT:fail", "executed", "$VERDICT:pass"],  # 首轮 execute 慢，让 x2 先耗尽
+            "x2": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2,
                                   pre_files={"sub.yaml": yaml.safe_dump(sub)})
@@ -559,9 +567,9 @@ class OrchestratorTest(unittest.TestCase):
                   on_exhaust="rollback", rollback_to="a"),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass"],
-            "b": ["executed", "fail", "executed", "pass"],
-            "c": ["executed", "fail", "executed", "pass"],
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
+            "c": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
         self.assertEqual(code, 0, out)
@@ -578,8 +586,8 @@ class OrchestratorTest(unittest.TestCase):
                   on_exhaust="rollback", rollback_to="a"),
         ]
         replies = {
-            "a": ["executed", "pass", "executed", "pass", "executed", "pass"],
-            "b": ["executed", "fail", "executed", "fail", "executed", "pass"],
+            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
+            "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
         code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_rollbacks=2)
         self.assertEqual(code, 0, out)
@@ -600,7 +608,7 @@ class OrchestratorTest(unittest.TestCase):
             "b": {"status": "fail", "retries": 1, "exhausted": True},
         }
         work_dir, wf, wr = self._legacy_work_dir(nodes, tasks, seq=0,
-                                                 dry_replies={"b": ["executed", "pass"]})
+                                                 dry_replies={"b": ["executed", "$VERDICT:pass"]})
         # execute_rollback 要恢复 checkpoint(a)：真实快照含 work_dir 顶层条目（恢复后
         # clear_tree 删掉的 workflow.yaml 随之还原），这里手工对齐，只需 workflow.yaml
         ckpt_a = wr / "checkpoints" / "a"
@@ -842,7 +850,7 @@ class BuildPromptTest(unittest.TestCase):
         self.assertIn('python3 "%s" --work-dir "/wd" --task-id "a"'
                       ' --reason "<why acceptance fails>"'
                       % (scripts + "/verdict_fail.py"), p)
-        self.assertIn("Then reply with only: pass or fail", p)
+        self.assertIn("The verdict file is required; a text reply is not a verdict.", p)
         self.assertNotIn("After verifying, reply with only", p)
 
     def test_verify_prompt_uses_namespaced_task_id(self):
@@ -853,7 +861,7 @@ class BuildPromptTest(unittest.TestCase):
     def test_execute_prompt_has_no_verdict_commands(self):
         p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up")
         self.assertNotIn("verdict_", p)
-        self.assertIn("After finishing, reply with only: executed", p)
+        self.assertNotIn("reply with only", p)
 
     def test_prompt_without_system_prompt_unchanged(self):
         p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up")
@@ -885,7 +893,7 @@ class ValidateSystemPromptTest(unittest.TestCase):
 class VerdictFileTest(unittest.TestCase):
     """verdict 裁决文件消费（黑盒 dry-run）。
 
-    $VERDICT 令牌模拟 verifier 调脚本写裁决文件；编排器以裁决文件为权威，文本解析兜底。
+    $VERDICT 令牌模拟 verifier 调脚本写裁决文件；编排器以裁决文件为权威，不使用文本兜底。
     """
 
     @staticmethod
@@ -917,31 +925,31 @@ class VerdictFileTest(unittest.TestCase):
         self.assertEqual(verdicts[0]["verdict"], "fail")
         self.assertEqual(verdicts[0]["reason"], "报告未生成")
 
-    def test_text_fallback_when_no_verdict_file(self):
+    def test_missing_verdict_triggers_reverification(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],
             dry_replies={"t1": ["executed", "通过"]})
-        # 兜底：others → 滞留 verifying → reset 自愈重验证（dry 默认回复 pass 收尾）
+        # 缺失裁决 → 滞留 verifying → reset 自愈重验证（dry 默认写 pass 裁决）。
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
         self.assertTrue(self._events(wd, "reset"))
-        self.assertFalse(self._events(wd, "verdict"))
+        self.assertEqual(len(self._events(wd, "verdict")), 1)
 
     def test_stale_verdict_file_cleared_on_dispatch(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],
             pre_files={os.path.relpath(verdict_file_path("/", "t1"), "/"):
                        '{"verdict": "fail"}\n'})
-        # 陈旧裁决文件在派发 verify 前被预清理；dry 默认文本回复 pass 生效
+        # 陈旧裁决文件先归档；dry 默认生成新的 pass 裁决。
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
-        self.assertFalse(Path(verdict_file_path(wd, "t1")).exists())
+        self.assertEqual(json.loads(Path(verdict_file_path(wd, "t1")).read_text())["verdict"], "pass")
         history = Path(wd) / ".workflow" / "verdicts" / "history"
         archived = list(history.glob("t1.*.json"))
         self.assertEqual(len(archived), 1)
         self.assertRegex(archived[0].name,
                          r"^t1\.20[0-9]{6}T[0-9]{6}\.[0-9]{6}Z\.json$")
-        self.assertFalse(self._events(wd, "verdict"))
+        self.assertEqual(len(self._events(wd, "verdict")), 1)
 
     def test_verdict_archive_failure_stops_dispatch(self):
         code, out, wd = self._run(
@@ -967,14 +975,14 @@ class VerdictFileTest(unittest.TestCase):
         code, out, wd = self._run(
             nodes=[_node("t1")],
             dry_replies={"t1": ["executed", "$VERDICT:fail:报告缺失|pass"]})
-        # 文本谎称 pass，裁决文件为 fail：裁决文件为准 + warning 记录矛盾
+        # 文本谎称 pass，裁决文件为 fail：忽略文本，只消费裁决文件。
         self.assertEqual(code, 1, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "fail")
         verdicts = self._events(wd, "verdict")
         self.assertEqual(len(verdicts), 1)
         self.assertEqual(verdicts[0]["verdict"], "fail")
         self.assertEqual(verdicts[0]["reason"], "报告缺失")
-        self.assertIn("warning", verdicts[0])
+        self.assertNotIn("warning", verdicts[0])
 
     def _run(self, **kwargs):
         code, out, wd = run_orchestrator(**kwargs)

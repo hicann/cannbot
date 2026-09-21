@@ -43,7 +43,7 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
 崩溃；"$SLEEP:<秒>" 模拟慢任务（睡眠后返回阶段默认回复）；verify 阶段的
 "$VERDICT:pass"/"$VERDICT:fail[:原因]" 模拟 verifier 调 verdict 回调脚本（写裁决文件，
 文本回复缺省模拟不合规的"通过/失败"，可用 "|文本" 覆盖）；未配置/耗尽的条目按阶段给默认回复
-（execute→executed，verify→pass）。
+（execute→executed，verify→写 pass 裁决文件）；普通文本不产生裁决。
 """
 import argparse
 import atexit
@@ -59,7 +59,6 @@ from datetime import datetime, timezone
 
 import yaml
 
-from update_status import classify  # 文本回复分类（裁决文件矛盾观测用）
 from verdict_common import verdict_file_path, write_verdict_file
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -79,29 +78,12 @@ class Provider(ABC):
     def build_command(self, agent, prompt):
         """返回完整 argv；子进程以 cwd=work_dir 运行。"""
 
-    def parse_reply(self, stdout):
-        """从 stdout 提取回复；默认取末条非空行，子类可按 CLI 输出格式覆写。"""
-        lines = [l.strip() for l in stdout.splitlines() if l.strip()]
-        return lines[-1] if lines else ""
-
 
 class OpenCodeProvider(Provider):
     name = "opencode"
 
     def build_command(self, agent, prompt):
         return ["opencode", "run", "--format", "json", "--agent", agent, prompt]
-
-    def parse_reply(self, stdout):
-        """--format json 输出 NDJSON 事件流，回复 = 全部 text 事件的 part.text 依序拼接。"""
-        texts = []
-        for line in stdout.splitlines():
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("type") == "text":
-                texts.append(ev.get("part", {}).get("text", ""))
-        return "\n".join(texts)
 
 
 class CannbotProvider(OpenCodeProvider):
@@ -120,34 +102,12 @@ class ClaudeProvider(Provider):
                 "--dangerously-skip-permissions",
                 "--agent", agent]
 
-    def parse_reply(self, stdout):
-        """-p --output-format json 输出单个 JSON 对象，回复 = result 字段。"""
-        try:
-            return json.loads(stdout).get("result", "")
-        except json.JSONDecodeError:
-            return super().parse_reply(stdout)
-
 
 class PiProvider(Provider):
     name = "pi"
 
     def build_command(self, agent, prompt):
         return ["pi", "-p", "--mode", "json", "--no-session", prompt]
-
-    def parse_reply(self, stdout):
-        """--mode json 输出 NDJSON 事件流，回复 = 全部 message_end(assistant) 的 text 拼接。"""
-        texts = []
-        for line in stdout.splitlines():
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("type") == "message_end":
-                msg = ev.get("message", {})
-                if msg.get("role") == "assistant":
-                    texts += [c.get("text", "") for c in msg.get("content", [])
-                              if c.get("type") == "text"]
-        return "\n".join(t for t in texts if t)
 
 
 class CodexProvider(Provider):
@@ -158,20 +118,6 @@ class CodexProvider(Provider):
         return ["codex", "exec", "--json", "--ephemeral",
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox", prompt]
-
-    def parse_reply(self, stdout):
-        """--json 输出 JSONL 事件流，回复 = 全部 item.completed(agent_message) 的 text 拼接。"""
-        texts = []
-        for line in stdout.splitlines():
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("type") == "item.completed":
-                item = ev.get("item", {})
-                if item.get("type") == "agent_message":
-                    texts.append(item.get("text", ""))
-        return "\n".join(t for t in texts if t)
 
 
 PROVIDERS = {p.name: p for p in (OpenCodeProvider(), CannbotProvider(), ClaudeProvider(), PiProvider(), CodexProvider())}
@@ -290,7 +236,7 @@ def clear_tree(path):
 
 def dry_reply(dry_map, task_id, phase):
     seq = dry_map.get(task_id)
-    default = "pass" if phase == "verify" else "executed"
+    default = VERDICT_PREFIX + "pass" if phase == "verify" else "executed"
     if isinstance(seq, list) and seq:
         r = str(seq.pop(0))
         if r.startswith(SLEEP_PREFIX):  # 模拟慢任务：睡眠后返回阶段默认回复
@@ -317,7 +263,7 @@ def report(work_dir):
 
 
 def run_agent(entry, provider, work_dir, dry_map):
-    """worker 线程体：执行一个派发条目，返回 (reply, crashed)；不碰 status.json。"""
+    """worker 线程体：返回 (内部阶段令牌, crashed)，stdout 仅存档；不碰 status.json。"""
     if dry_map is not None:
         reply = dry_reply(dry_map, entry["task_id"], entry["_phase"])
         if entry["_phase"] == "advice" and reply != CRASH:
@@ -345,8 +291,8 @@ def run_agent(entry, provider, work_dir, dry_map):
         with open(path, "a", encoding="utf-8") as f:
             f.write("\nexit=%d\n%s" % (rc, stderr))
         return None, True
-    with open(path, encoding="utf-8") as f:
-        return provider.parse_reply(f.read()), False
+    # stdout 仅存档；进程成功与否只看退出码，验证结论由裁决文件提供。
+    return "executed" if entry["_phase"] == "execute" else "", False
 
 
 def finish_advice(work_dir, entry, crashed=False, error=None):
@@ -374,7 +320,7 @@ def finish_advice(work_dir, entry, crashed=False, error=None):
 def consume_verdict_file(work_dir, task_id):
     """收割 verify 任务时读取裁决文件；合法返回 (verdict, reason|None)，否则 None。
 
-    裁决文件优先于文本回复（verifier 自然语言不可靠）；缺失/非法 → None，走文本兜底。
+    裁决文件是唯一验证依据；缺失/非法 → None，保持 verifying。
     """
     path = verdict_file_path(work_dir, task_id)
     try:
@@ -409,18 +355,17 @@ def clear_verdict_file(work_dir, task_id):
         return False
 
 
-def resolve_verdict_reply(work_dir, task_id, reply):
-    """优先使用有效裁决文件，记录裁决及文本矛盾；无有效文件则保留原回复。"""
+def resolve_verdict_reply(work_dir, task_id):
+    """仅使用有效裁决文件；缺失或非法时保持 verifying，等待重新验证。"""
     verdict = consume_verdict_file(work_dir, task_id)
     if not verdict:
-        return reply
+        log_event(work_dir, event="verdict_missing", task_id=task_id,
+                  reason="裁决文件缺失或非法，需要重新验证")
+        return ""
     word, reason = verdict
     event = {"event": "verdict", "task_id": task_id, "verdict": word}
     if reason:
         event["reason"] = reason
-    text_cls = classify(reply)
-    if text_cls in ("pass", "fail") and text_cls != word:
-        event["warning"] = "文本回复 %r 与裁决文件矛盾，以裁决文件为准" % text_cls
     log_event(work_dir, **event)
     return word
 
@@ -429,7 +374,7 @@ def harvest_done(work_dir, inflight):
     """收割已完成的 future（主线程串行调用，status.json 唯一写入路径）。
 
     崩溃 = 一次失败：log crash 事件、update_status 传 $CRASH（落 fail、吃预算）；
-    正常回复原样传递。单任务更新失败仅记录不停机。
+    成功执行写 executed，成功验证仅消费裁决文件。单任务更新失败仅记录不停机。
     """
     for future in [x for x in inflight if x.done()]:
         entry = inflight.pop(future)
@@ -446,7 +391,9 @@ def harvest_done(work_dir, inflight):
             log_event(work_dir, event="crash", task_id=entry["task_id"])
             reply = CRASH
         elif entry.get("_phase") == "verify":
-            reply = resolve_verdict_reply(work_dir, entry["task_id"], reply)
+            reply = resolve_verdict_reply(work_dir, entry["task_id"])
+        else:
+            reply = "executed"
         rc = update(work_dir, entry["task_id"], reply).returncode
         if rc != 0:
             # 单任务更新失败不停机：可能因 agent 越权直改 status.json 等。
