@@ -49,6 +49,7 @@ from dataclasses import dataclass
 import yaml
 
 import orchestrator as orch  # 复用工作区快照与事件日志工具；agent 仅由 orchestrator 执行
+from verdict_common import verdict_file_path
 
 TOP_KEYS = ("workflow", "max_parallel", "nodes")
 OPTIONAL_TOP_KEYS = ("max_rollbacks", "system_prompt")  # 顶层可选键
@@ -510,8 +511,22 @@ class PromptContext:
     """提示词可选上下文：回滚建议、全局指令与完整任务标识。"""
 
     advice: str = None
+    failure_reason: str = None
     system_prompt: str = None
     task_id: str = None
+
+
+def read_verdict_failure_reason(work_dir, task_id):
+    """读取任务最近保留的失败裁决原因；无有效原因时返回 None。"""
+    try:
+        with open(verdict_file_path(work_dir, task_id), encoding="utf-8") as f:
+            verdict = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(verdict, dict) or verdict.get("verdict") != "fail":
+        return None
+    reason = verdict.get("reason")
+    return reason.strip() if isinstance(reason, str) and reason.strip() else None
 
 
 def build_prompt(node, phase, work_dir, user_prompt, context=None):
@@ -524,6 +539,7 @@ def build_prompt(node, phase, work_dir, user_prompt, context=None):
     """
     context = context or PromptContext()
     advice = context.advice
+    failure_reason = context.failure_reason
     system_prompt = context.system_prompt
 
     def block(name, items):
@@ -535,6 +551,8 @@ def build_prompt(node, phase, work_dir, user_prompt, context=None):
     parts += ["[%s] %s" % (node["id"], node["title"]), block("Goal", node["goal"])]
     if phase == "execute":
         parts.append(block("Approach", node["approach"]))
+        if failure_reason:
+            parts.append("Previous-Verification-Failure: %s" % failure_reason)
         if advice:
             with open(advice, encoding="utf-8") as f:
                 advice_content = f.read()
@@ -764,6 +782,7 @@ def main():
             "agent": node["executor"] if phase == "execute" else node["verifier"],
             "prompt": build_prompt(node, phase, work_dir, up_path, PromptContext(
                 advice=tasks[tid].get("advice"),
+                failure_reason=read_verdict_failure_reason(work_dir, tid),
                 system_prompt=config.get("system_prompt"), task_id=tid)),
         })
         if phase == "execute":

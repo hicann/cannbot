@@ -822,6 +822,34 @@ class BuildPromptTest(unittest.TestCase):
             self.assertIn("Rollback-Advice:", p)
             self.assertIn(advice.read_text(), p)
 
+    def test_execute_prompt_includes_latest_verdict_failure_reason(self):
+        with tempfile.TemporaryDirectory() as wd:
+            verdict = Path(verdict_file_path(wd, "a"))
+            verdict.parent.mkdir(parents=True)
+            verdict.write_text(json.dumps({"verdict": "fail", "reason": "报告未生成"}))
+            reason = get_task.read_verdict_failure_reason(wd, "a")
+            p = get_task.build_prompt(
+                self.NODE, "execute", wd, "/up",
+                get_task.PromptContext(failure_reason=reason))
+            self.assertIn("Previous-Verification-Failure:", p)
+            self.assertIn("报告未生成", p)
+
+    def test_verify_prompt_omits_verdict_failure_reason(self):
+        p = get_task.build_prompt(
+            self.NODE, "verify", "/wd", "/up",
+            get_task.PromptContext(failure_reason="报告未生成"))
+        self.assertNotIn("Previous-Verification-Failure", p)
+
+    def test_missing_or_non_fail_verdict_has_no_failure_reason(self):
+        with tempfile.TemporaryDirectory() as wd:
+            self.assertIsNone(get_task.read_verdict_failure_reason(wd, "a"))
+            verdict = Path(verdict_file_path(wd, "a"))
+            verdict.parent.mkdir(parents=True)
+            verdict.write_text(json.dumps({"verdict": "pass"}))
+            self.assertIsNone(get_task.read_verdict_failure_reason(wd, "a"))
+            verdict.write_text("not json")
+            self.assertIsNone(get_task.read_verdict_failure_reason(wd, "a"))
+
     def test_verify_prompt_omits_advice(self):
         p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
                                   get_task.PromptContext(advice="/wd/.workflow/advice/x.md"))
