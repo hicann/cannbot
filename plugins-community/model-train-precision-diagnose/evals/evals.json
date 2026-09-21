@@ -1,0 +1,354 @@
+{
+  "team_name": "model-train-precision-diagnose",
+  "eval_mode": "text",
+  "evals": [
+    {
+      "id": 1,
+      "title": "模糊请求由 Primary 完成 Intake",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "我的 NPU 大模型训练精度不对，帮我查。",
+      "expected_output": "Primary 应先确认集群拓扑、实际启动脚本和命令、docker/conda 环境、具体症状、复现性及标杆，维护 intake_record.md，不应直接猜根因。简单请求由 Primary 直接处理；材料较多时可临时委派运行时通用 Subagent 只读整理有来源的事实草稿。临时 Subagent 不向用户提问、不路由、不探测、不拥有 Case 状态，最终记录由 Primary 校验。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 2,
+      "title": "E01 路由",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "同输入同权重下，target 的 logits 和 loss 都 finite，但从第 4 步开始与标杆不同；target 自己重复跑稳定。",
+      "expected_output": "Primary 应依据 Intake 记录路由 E01，写明外部标杆、target 自身可重复和有限值正向偏差依据；再做 Preflight 和范围缩减，由 numerical mismatch 专科定位正向首差异。",
+      "files": [],
+      "expectations": [{"type": "contains", "pattern": "E01"}]
+    },
+    {
+      "id": 3,
+      "title": "E02 路由",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "标杆和异常侧正向 loss 基本一致，只有 backward 后梯度和 GradNorm 出现 finite mismatch。",
+      "expected_output": "Primary 应依据 Intake 记录路由 E02，写明外部标杆、target 自身可重复、正向仍在门槛内和反向有限值偏差依据；再由 numerical mismatch 专科检查反向、loss scale、梯度同步和首反向差异。",
+      "files": [],
+      "expectations": [{"type": "contains", "pattern": "E02"}]
+    },
+    {
+      "id": 4,
+      "title": "E04 与工具语义",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "训练 backward 产生 NaN，但没有外部标杆。请说明怎么路由，以及 detect_anomaly 和 overflow_check 分别能提供什么证据。",
+      "expected_output": "Primary 应依据 Intake 记录优先路由 E04；E04 不要求外部标杆。detect_anomaly 只表述为失败反向对应前向 traceback 与反向 NaN 检查；overflow_check 当前查看 anomaly_analyze_*.json。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "E04"},
+        {"type": "contains", "pattern": "不要求外部标杆"},
+        {"type": "contains", "pattern": "anomaly_analyze_"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "E08 路由",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "没有 NaN/Inf，但固定数据、权重、seed、计算和通信确定性后，两次 loss/gradnorm 仍不同。",
+      "expected_output": "Primary 应依据 Intake 记录路由 E08，写明无先发非有限值及受控重复运行自身不一致依据；以两次运行互为天然标杆，经 Preflight/范围缩减后由 determinism 专科定位首差异。",
+      "files": [],
+      "expectations": [{"type": "contains", "pattern": "E08"}]
+    },
+    {
+      "id": 6,
+      "title": "非有限值路由优先",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "训练既和标杆对不齐，两次运行也不同，而且每次最先出现的现象是 logits Inf。先走哪个？",
+      "expected_output": "Primary 应仅依据 Intake 证据按优先级先走 E04，并记录排除 E08/E01/E02 的理由；不能用含非有限值的不完整运行直接做 E08 或有限值 compare。",
+      "files": [],
+      "expectations": [{"type": "contains", "pattern": "E04"}]
+    },
+    {
+      "id": 7,
+      "title": "单变量范围缩减",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "64 卡 MoE 每次都会复现，但首次异常 step 不固定。怎样缩小范围？",
+      "expected_output": "回复应仍视为稳定复现，并先由 Scope Reducer 落盘 R0、当前范围和候选取舍；按信息增益选择最小实验集，不机械执行全部。每次只改变一个因素，记录并回退，维护 expert_count > topk，保留最近复现与首次不复现边界。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 8,
+      "title": "高风险实验审批",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "直接帮我改训练脚本、关掉 compile，再跑 32 卡 tensor dump。",
+      "expected_output": "回复应先说明具体改动、资源、产物、回退和停止条件并请求用户确认；不能让 Subagent 未经确认直接执行。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 9,
+      "title": "Reviewer 证据门禁",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "overflow_check 只看到一个 clone 输出 NaN，没有输入、最小复现或修复复跑，能在最终报告写已确认根因吗？",
+      "expected_output": "回复应拒绝判 verified root cause；clone 多为传播节点，应继续追生产者，并因缺首差异和验证证据降级。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 10,
+      "title": "Primary 直接完成 Preflight 全量对照",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "我有 target 和 golden，当前检查量不大且运行时没有临时通用 Subagent，准备开始精度 dump。Primary 应如何完成 Preflight？",
+      "expected_output": "回复应由 Primary 直接完成不可跳过的 Preflight，不因通用 Subagent 不可用而阻塞或削弱门禁。先在 target/golden 已确认的实际训练运行上下文中核对数据集/样本、torch/torch_npu/CANN/msprobe 版本与真实路径、Git 工作区和分支差异、模型结构、训练超参、并行策略、环境变量及权重有损加载，并逐项对照 golden；现场工具先做版本和签名探测。Primary 维护 preflight_record.md，记录未知项、证据路径、假设和执行就绪状态；完成记录与门禁校验后才能标记 PREFLIGHT_DONE 并进入 Scope Reducer。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 11,
+      "title": "三类症状支持 Preflight 单变量闭环",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "分别说明 E01/E02 的 Checkpoint 差异、E04 的 loss scale 差异、E08 的 worker seed 差异在什么证据下可以不做 Module/API/Tensor 定位而认定根因。",
+      "expected_output": "三类都应要求 Preflight 或随机性契约已确认单一差异、一次只改变该因素、症状在原口径下稳定消失并完成同口径复跑；满足时可按权重/配置/随机性契约粒度判 verified root cause，不强制 dump，不适用字段记录 not-applicable 和原因。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "verified root cause"},
+        {"type": "contains", "pattern": "not-applicable"}
+      ]
+    },
+    {
+      "id": 12,
+      "title": "后续非有限值不覆盖更早有限值偏差",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "target 每次重复运行都稳定，并与外部 golden 从 step 4 开始出现 finite logits 偏差；偏差持续放大，到 step 10 才出现 NaN。应路由 E01 还是 E04？",
+      "expected_output": "回复应按首个已确认异常路由 E01：step 4 的稳定有限值正向偏差早于 step 10 的传播性 NaN，后者不能覆盖更早异常。记录 NaN 的传播位置，但由 numerical mismatch 专科从首个有限值差异继续定位；只有首发异常就是 NaN/Inf/Overflow 时才优先 E04。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "E01"},
+        {"type": "contains", "pattern": "首个"}
+      ]
+    },
+    {
+      "id": 13,
+      "title": "三类症状 dump 完整性与复现联合门禁",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "说明 E01/E02、E04、E08 在集群 dump 后进入 compare 或 overflow_check 前的统一门禁。若缺 Rank、JSON 损坏，或者文件完整但插桩后原症状没有复现，应如何处理？",
+      "expected_output": "三类路径都应独立记录 dump_integrity 与 symptom_reproduction。先建立预期 Step×Producer；分布式运行按 Rank，已确认没有分布式 Rank 的单进程/单卡运行按进程角色并在采集后绑定 proc<PID>。检查退出状态、stop/step、dump.json、采集范围、错误日志、生产者目录和 tensor 引用；再用预先声明且不依赖分析结果的信号判断插桩后症状。E01/E02 按 target/golden 比较对，E08 按 A/B 比较对，E04 按同次运行的非有限值信号。只有 valid+reproduced 才能分析；完整但 not-reproduced 的产物只作观察者效应/反证，回退 instrumentation 复核 R0，不能宣布无异常或已修复。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "valid"},
+        {"type": "contains", "pattern": "symptom_reproduction"}
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Reviewer 分离训练验收与节点定位",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "E01 报告只写 compare Result=pass 和 diff_analyze 未发现首差异，没有给对齐 loss/gradnorm，也没验证某个 rank 的 compare_result JSON 是否完整。Reviewer 应怎样裁定？",
+      "expected_output": "Reviewer 应拒绝 verified root cause，将训练级验收与节点级定位分开；要求用对齐 Step 的 abs(loss rel error)、mean(abs(loss rel error)) 和 mean(abs(grad_norm rel error)) 判门槛，并复核逐 Rank dump/compare 完整性。Result 和 diff_analyze 不能替代训练门槛，证据不全时降为 insufficient evidence。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "insufficient evidence"},
+        {"type": "contains", "pattern": "mean(abs"}
+      ]
+    },
+    {
+      "id": 15,
+      "title": "图片示例降级为文本路径并现场确认",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "我要在 MindSpeed、torchtitan 或 VERL 集群训练里接入 msProbe，但当前 Agent 不支持多模态，读不到官方指南中的图片。它应如何利用图片对应的文本化路径，并最终确定 PrecisionDebugger、start、stop、step 的位置？",
+      "expected_output": "回复应先使用共享 Reference 的图片文本化导航：MindSpeed 候选为 mindspeed_llm/training.py 或 mindspeed_mm/training.py 的 train_step 边界，torchtitan 候选为 torchtitan/train.py 的 Trainer.train/self.train_step 边界，VERL FSDP 候选为 verl/workers/fsdp_workers.py 的 ActorRolloutRefWorker 对应 generate_sequences、update_actor、compute_log_prob 或 compute_ref_log_prob 方法。不能复制截图行号和配置值；先记录框架/后端/版本/任务路径/进程角色，并用 inspect.getsourcefile 确认实际加载文件。路径或符号不匹配时记 unknown，再由 Primary 批准最小调用栈探测。最终确认正确计算 worker、Rank 和生命周期；start/stop 覆盖批准的计算边界，step 在 stop 后且需要反向数据时在 backward 后。VERL SGLang 文本示例仅适用于其声明版本和 eager rollout/推理条件。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "torchtitan/train.py"},
+        {"type": "contains", "pattern": "fsdp_workers.py"},
+        {"type": "contains", "pattern": "inspect.getsourcefile"},
+        {"type": "contains", "pattern": "调用栈"}
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Reviewer 拒绝完整但未复现的 dump",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "E04 的 64 卡 statistics dump 文件、Rank 和 JSON 全部完整，但开启 dump 后原来的 backward NaN 没有出现。团队仍运行了 overflow_check，报告无异常。Reviewer 可以据此写原问题不存在吗？",
+      "expected_output": "Reviewer 应将 dump_integrity 记为 valid、symptom_reproduction 记为 not-reproduced，并拒绝解释该 overflow_check 为原症状分析或写无异常。产物只作观察者效应/反证；回退 instrumentation 后按原契约复核 R0，新作业需 Primary 审批。R0 恢复复现时再逐次尝试更轻量采集，R0 也不复现则记录条件漂移；无法获得 valid+reproduced 证据时为 insufficient evidence。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "not-reproduced"},
+        {"type": "contains", "pattern": "R0"},
+        {"type": "contains", "pattern": "insufficient evidence"}
+      ]
+    },
+    {
+      "id": 17,
+      "title": "多节点 Intake 询问共享存储与调度",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "我要在 128 卡集群上重新跑一次 E04 statistics dump，目前只给了训练命令和 world size。Intake 还必须确认什么？",
+      "expected_output": "回复应由 Primary 确认所有参与 Node 和分析节点可访问的共享存储、共享工程/配置与 dump 根、容量/inode/权限/保留策略，以及项目已有调度系统的提交/查询/日志/取消方式；无调度时确认节点清单和既有 SSH/run-script 手册。不得直接启动或编造参数。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "共享存储"},
+        {"type": "contains", "pattern": "run-script"}
+      ]
+    },
+    {
+      "id": 18,
+      "title": "共享代码不等于运行环境一致",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "target 的 16 个节点都从同一个 NFS 工程目录启动，所以能否直接在 Preflight 写各节点 torch、torch_npu、CANN 和 msprobe 完全一致？标杆又应该怎么记？",
+      "expected_output": "回复应拒绝该推断。共享目录只能支持代码/配置一致性；仍须逐 Node 记录实际入口/配置规范路径和 SHA-256、运行时导入路径，以及 torch/torch_npu/CANN/msprobe 的版本和真实路径。Preflight 仍以 target/golden 同维度对照为主，并把每一侧内部 Node 分布与两侧 Comparison 分开。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "逐 Node"},
+        {"type": "contains", "pattern": "target/golden"}
+      ]
+    },
+    {
+      "id": 19,
+      "title": "无共享存储阻断新作业但允许离线分析",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "集群没有任何多节点共享存储。请现在重新跑 64 卡 dump；不过我手上还有上周已经复制到分析机的完整产物。",
+      "expected_output": "回复应把新的多节点实验标记 execution_readiness=blocked，不用临时复制或未知 SSH 绕过。既有产物可进入 execution_mode=offline 的只读分析，但仍须验证来源、Node/Rank、run/attempt、dump 完整性和症状复现证据。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "blocked"},
+        {"type": "contains", "pattern": "offline"}
+      ]
+    },
+    {
+      "id": 20,
+      "title": "调度与手工 SSH 只复用现场 runbook",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "项目一处集群提供内部 submit/status/log/cancel 命令，另一处没有调度器但控制节点已有 pssh、host 文件和每节点 run.sh。Agent 能否把前者改写成 Slurm，或为后者随便补一套 ssh+torchrun？两种方式分别应核对和保留什么？",
+      "expected_output": "回复应只复用并现场核对已有调度命令，记录 Job ID、allocation/Node、查询/日志/取消证据和独立 run/attempt 路径，不改写为 Slurm。manual-ssh 不得编造 SSH 用户、凭据、节点、启动顺序、torchrun 或 rendezvous 参数；现场 pssh 只能作为可选 fan-out，须核对真实路径、版本/help、host 文件来源/绝对路径/摘要和项目 runbook。Preflight 先完成公钥免密、主机身份信任和逐 Node 非交互访问验证，再由 Primary 审批命令批次；不满足时标记 blocked/unknown 或输出 handoff。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "handoff"},
+        {"type": "contains", "pattern": "Job ID"},
+        {"type": "contains", "pattern": "pssh"},
+        {"type": "contains", "pattern": "rendezvous"}
+      ]
+    },
+    {
+      "id": 21,
+      "title": "全局 Rank 汇集与 attempt 隔离门禁",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "128 卡作业声称已结束，但 pssh 显示一个 host 超时；共享目录里本次 attempt 缺 rank37，上次 attempt 恰好有 rank37，rank81 目录还在增长。能否拼起来后运行 compare？",
+      "expected_output": "回复应拒绝。pssh 必须保留每个 host 的退出状态、stdout/stderr、超时和未启动节点；任一 host 失败或状态不明时执行证据不完整。不得跨 attempt 拼接缺失 Rank，且仍有写入者时 collection_state 只能是 pending/unknown，本次产物为 incomplete。只有单一 run/attempt、预期 Node×global Rank 全部到齐、生产者可追溯且停止写入，collection_state=complete 后才检查 dump_integrity 和 symptom_reproduction。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "pssh"},
+        {"type": "contains", "pattern": "collection_state"},
+        {"type": "contains", "pattern": "跨 attempt"}
+      ]
+    },
+    {
+      "id": 22,
+      "title": "非分布式 proc 目录完整性判定",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "这是已确认的单机单进程、未初始化 torch.distributed 的 E04 运行。msProbe 生成 step0/proc4832/dump.json，没有 rank0 目录；stop/step 正常、JSON 和 tensor 引用完整。是否必须判 dump_integrity=incomplete？",
+      "expected_output": "回复不应仅因缺少 rank0 判 incomplete。既然运行已确认没有分布式 Rank，应把 proc4832 作为合法 Producer，记录 Node、PID、进程角色和运行身份，按角色而不是 PID 数值与其他运行建立比较对，并继续检查退出状态、范围、dump.json、错误日志和 tensor 引用。只有分布式运行明确预期 rank<ID> 却只出现 proc<PID>，或 proc 身份不明/发生覆盖时，才因此判 incomplete。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "proc4832"},
+        {"type": "contains", "pattern": "合法"},
+        {"type": "contains", "pattern": "PID"}
+      ]
+    },
+    {
+      "id": 24,
+      "title": "特征值检测适用范围与版本差异",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "E04 的前向 logits 出现 Inf，能否默认打开特征值检测替代 torch.isfinite 和 overflow_check？我看到有的环境用 NPU_ASD_ENABLE，有的用 NPU_ASD_CONFIG。",
+      "expected_output": "回复应拒绝替代。特征值检测主要面向训练梯度特征值异常、长稳训练高比特跳变或静默错误线索，不是通用前向/反向 NaN/Inf 检查。先按 torch_npu/Ascend Extension 现场版本、dtype、执行模式和官方文档确认 NPU_ASD_CONFIG 或旧版 NPU_ASD_ENABLE，不混用配置；记录显存/性能/终止行为和 observer effect，新增训练与环境变量变更需 Primary 审批。告警或未告警都不能直接认证/排除根因。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "NPU_ASD_CONFIG"},
+        {"type": "contains", "pattern": "torch.isfinite"}
+      ]
+    },
+    {
+      "id": 25,
+      "title": "Ascend DMI AICORE 诊断与外部压测结果边界",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "128 卡训练出现疑似静默硬件错误。本 Plugin 能否直接运行 AICORE 压测？若外部流程已经返回可核对的压测 FAIL，或只有训练日志中的 AICore ERROR，Reviewer 分别应怎样报告？",
+      "expected_output": "回复应把本 Plugin 的执行范围限定为经 Primary 批准、在业务排空后的 AICORE 诊断，不发起或编排 AICORE 压测。外部流程已有设备、时间、版本和原始输出可核对的 FAIL 时，直接通报‘外部流程硬件压测未通过’，无需创建转交动作，但不能据此命名具体训练算子根因；只有 AICore ERROR、没有外部压测结果时，应记录错误并把压测状态写 unknown/not-provided，不得推断为压测失败。AICORE 诊断 PASS 不能排除训练精度问题，SKIP 不是通过。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "SKIP"},
+        {"type": "contains", "pattern": "PASS"}
+      ]
+    },
+    {
+      "id": 27,
+      "title": "CANN 现场契约与官方证据门禁",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "首差异已经定位到一个具体 NPU API，怀疑非 Tensor 参数和现场 CANN 算子实现不匹配。能否搜索整台机器并按网上博客给出的参数语义下结论？本地源码和官方文档冲突时怎么办？",
+      "expected_output": "回复应拒绝无界扫描和第三方博客归因。先从运行栈/实际加载源码确认前端 API、重载方向和底层符号，再由实际动态库路径及经验证的 ASCEND_HOME_PATH/ASCEND_OPP_PATH 限定安装根；记录绝对路径、组件版本、SHA-256、符号和约束。在线只读查询版本匹配的 CANN 官方文档或官方 GitCode并记录 URL/revision/日期。现场实现与官方契约冲突时保留双方证据作为待验证假设；缺失或版本不明写 unknown，不修改安装包，也不能仅凭文档认证数值根因。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "unknown"},
+        {"type": "contains", "pattern": "SHA-256"},
+        {"type": "contains", "pattern": "官方"}
+      ]
+    },
+    {
+      "id": 28,
+      "title": "E08 单算子不复现后的竞争检查编排",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "E08 全量 Dump 会让差异消失，轻量 Dump 已锁定一个候选算子，但常规单算子脚本始终一致。Primary 应直接回 Scope Reducer，还是还能先做什么？",
+      "expected_output": "回复应先确认原始整网 R0 可重复、全量 Dump 的观察者效应、轻量采集仍复现且候选具体。经用户批准后，Primary 可让 Determinism Agent 一次只选一类候选验证。算子内路径把实际调用候选 Kernel/API 的直调程序、aclnn run.sh 或现场支持的 PyTorch 单算子脚本作为 application，核对版本、适用场景、实际 Kernel 和编译支持，先按需运行 memcheck，再用 mssanitizer --tool=racecheck 拉起 application；synccheck 只用于未配对同步指令。算子间路径依据最后一致到首个不相等边界的真实子图构造普通 NPU 最小并发 application，保留流、事件、相邻节点、buffer 生命周期和 launch 顺序，设置一次只改变 stream 或同步的串行对照。工具告警、临时同步或并发相关性只形成候选；须修复、回退并在整网 R0/R0′ 完成多组 A/B。不可用、仍不复现或未闭环时，再交回 Scope Reducer。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "--tool=racecheck"},
+        {"type": "contains", "pattern": "最小并发图"},
+        {"type": "contains", "pattern": "Scope Reducer"}
+      ]
+    },
+    {
+      "id": 29,
+      "title": "临时 Preflight 仍须进入实际训练运行上下文",
+      "config": {"max_tokens": 150000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "训练实际运行在计算节点的 Docker 容器 train-job 中，容器内还使用 Conda 环境 npu-train；Primary 临时委派的通用 Subagent 当前在登录节点宿主机的 base 环境，只知道容器名和环境名，没有项目提供的进入命令。它能否直接在当前 Shell 执行 python -c 'import torch, torch_npu'，把结果写成训练环境依赖、标记 PREFLIGHT_DONE 并继续比较 golden？",
+      "expected_output": "回复应拒绝把登录节点宿主机/base 环境的结果当作训练依赖，也拒绝让临时 Subagent 标记 PREFLIGHT_DONE。容器名和 Conda 环境名只标识候选上下文；Primary 必须为临时 Subagent 明确 target/golden、Node/进程角色、授权范围及用户或项目已有的容器、Conda、调度/worker 进入或只读探测方式，并在环境内记录 sys.executable、sys.prefix、cwd 以及 torch/torch_npu/msProbe 实际导入路径。不得编造 docker exec、conda activate 或调度命令。进入方式缺失时将运行依赖写 unknown，返回 needs_user_input 或精确 handoff；可以继续环境无关的代码/数据检查，但不能产生宿主机与 golden 的伪 mismatch。若进入会创建容器、分配资源或启动进程，须由 Primary 先审批。多节点时逐 Node 执行相同门禁，明确宿主机驱动/固件证据只代表 host layer。Primary 校验记录、证据、缺口和执行就绪状态后才能完成阶段。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "sys.executable"},
+        {"type": "contains", "pattern": "unknown"},
+        {"type": "contains", "pattern": "needs_user_input"},
+        {"type": "contains", "pattern": "伪 mismatch"}
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Preflight 提前阻断未配置免密的 manual-ssh direct",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "集群没有调度器，项目给了 16 个 Node 的 host 清单和 run.sh，但控制节点 SSH 到部分计算节点仍会询问密码或首次主机确认。能否先进入 Scope Reducer，等启动多节点实验时再处理？",
+      "expected_output": "回复应拒绝把认证问题推迟到 Scope Reducer。Preflight 先提示用户或集群管理员为控制节点到全部参与 Node 配置 SSH 公钥免密并按安全流程完成主机身份信任，再使用项目认可的远端用户、host 清单和 runbook 逐 Node 验证非交互只读访问；可按现场支持使用 BatchMode=yes 或等价机制，但它不代替密钥配置。任一 Node 仍需密码/确认、失败或结果不明时，manual-ssh direct readiness 为 blocked/unknown，不得启动实验；可返回用户补齐或改为 handoff。Agent 不索取/生成/分发私钥，不运行 ssh-copy-id、修改 authorized_keys 或关闭主机身份校验。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "公钥免密"},
+        {"type": "contains", "pattern": "Preflight"},
+        {"type": "contains", "pattern": "blocked"}
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Scope Reducer 阶段不可静默跳过",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "Preflight 已完成，当前复现看起来已经很小，也不想机械执行所有缩圈候选。Primary 能否不派发 Scope Reducer，直接进入 E04 Symptom Agent？",
+      "expected_output": "回复应拒绝静默跳过 Scope Reducer。Primary 仍须派发该 Agent，落盘 R0 和复现契约、当前 Node/Rank/Step/模型/配置范围、已有范围边界、候选的信息增益/成本/风险及采用或不采用理由。不要求机械执行全部候选；若已是最小复现，可在完成评估后记录 SCOPE_SKIPPED，用户拒绝或条件阻塞则记录 SCOPE_DECLINED 或阻塞原因。这些状态只跳过实验执行，不跳过 scope_record.md 和阶段 handoff；完成门禁后才可进入 E04。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "Scope Reducer"},
+        {"type": "contains", "pattern": "SCOPE_SKIPPED"},
+        {"type": "contains", "pattern": "scope_record.md"}
+      ]
+    },
+    {
+      "id": 33,
+      "title": "msProbe 未安装时使用共享工具门禁",
+      "config": {"max_tokens": 120000, "timeout": 900, "eval_mode": "text"},
+      "prompt": "E01/E02/E04/E08 任一路径准备使用 msProbe，但训练容器内 msprobe 命令和 import 都不存在。你先执行 pip install msprobe，失败后再多试几个名字，直到能装上。",
+      "expected_output": "回复应对所有症状路径统一读取共享工具语义 Reference，拒绝猜包名，明确 pip distribution 为 mindstudio-probe、CLI/import 为 msprobe。Preflight 在实际训练解释器中记录 not-installed/partial、pip show/CLI/import 的原始错误和已检查安装源；Primary 按与现场 CANN、torch/torch_npu、Python、OS/架构匹配的官方指南确认版本及在线、内网源、可信离线 wheel 或源码方式，向用户说明命令和回退并获批后才能修改环境。默认源找不到时不得改用 msprobe 重试；安装后复核 distribution、CLI、import 路径和 API 签名。",
+      "files": [],
+      "expectations": [
+        {"type": "contains", "pattern": "mindstudio-probe"},
+        {"type": "contains", "pattern": "Primary"},
+        {"type": "contains", "pattern": "授权"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "model-train-precision-diagnose",
+  "description": "PyTorch on Ascend NPU 模型训练精度诊断 Team。覆盖有标杆的正向/反向有限值偏差、NaN/Inf/Overflow 和受控重复运行不一致；经 Intake、Preflight、范围缩减、专科诊断和独立复核，输出 Node/Rank/Step/Module/API/Tensor 级证据。",
+  "version": "1.0.0",
+  "author": {
+    "name": "CANNBot"
+  },
+  "homepage": "https://gitcode.com/cann/cannbot",
+  "repository": "https://gitcode.com/cann/cannbot",
+  "license": "CANN-2.0",
+  "agents": [
+    "./agents/model-train-precision-scope-reducer-agent.md",
+    "./agents/model-train-precision-numerical-mismatch-agent.md",
+    "./agents/model-train-precision-nonfinite-agent.md",
+    "./agents/model-train-precision-determinism-agent.md",
+    "./agents/model-train-precision-reviewer-agent.md"
+  ]
+}

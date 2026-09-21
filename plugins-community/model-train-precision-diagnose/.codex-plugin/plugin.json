@@ -1,0 +1,35 @@
+{
+  "name": "model-train-precision-diagnose",
+  "version": "1.0.0",
+  "description": "Diagnose PyTorch training precision issues on Ascend NPU with evidence-driven symptom routing.",
+  "author": {
+    "name": "CANNBot"
+  },
+  "homepage": "https://gitcode.com/cann/cannbot",
+  "repository": "https://gitcode.com/cann/cannbot",
+  "license": "CANN-2.0",
+  "keywords": [
+    "ascend",
+    "pytorch",
+    "training",
+    "precision",
+    "diagnosis"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Model Train Precision Diagnose",
+    "shortDescription": "Diagnose Ascend NPU training precision failures.",
+    "longDescription": "Routes finite mismatches, non-finite values, and determinism failures through preflight, scope reduction, specialist diagnosis, and evidence review.",
+    "developerName": "CANNBot",
+    "category": "Productivity",
+    "capabilities": [
+      "Skills",
+      "Agents"
+    ],
+    "defaultPrompt": [
+      "Diagnose why my NPU training loss differs from the benchmark.",
+      "Find the first NaN or Inf in this NPU training run.",
+      "Diagnose why two deterministic training runs differ."
+    ]
+  }
+}

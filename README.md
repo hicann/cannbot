@@ -37,6 +37,12 @@ bash init.sh
 | [`model-infer-optimize`](plugins/model-infer-optimize/) | NPU 模型迁移、精度对齐与推理性能优化 |
 | [`ops-registry-invoke`](plugins/ops-registry-invoke/) | ACLNN算子开发工作流 |
 
+## 🧩 社区插件
+
+| 插件 | 能力 |
+|------|------|
+| [`model-train-precision-diagnose`](plugins-community/model-train-precision-diagnose/) | PyTorch on Ascend NPU 训练有限值偏差、NaN/Inf/Overflow 与确定性异常诊断 |
+
 ## 📖 文档
 
 - [插件安装与工作流](script/docs/cannbot-workflows.md)

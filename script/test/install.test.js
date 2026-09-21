@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { pluginSourceDefinition } from "../lib/plugin-bundle.js";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "..");
@@ -32,6 +33,20 @@ function createSandbox(prefix) {
   return sandbox;
 }
 
+test("model-train-precision-diagnose resolves its community Skill sources", () => {
+  const definition = pluginSourceDefinition(repositoryRoot, "model-train-precision-diagnose");
+  assert.equal(
+    definition.pluginRoot,
+    join(repositoryRoot, "plugins-community", "model-train-precision-diagnose"),
+  );
+  assert.deepEqual(definition.skills, [
+    "model/model-train-precision-numerical-mismatch",
+    "model/model-train-precision-nonfinite",
+    "model/model-train-precision-determinism",
+    "model/model-train-log-visualization",
+  ]);
+});
+
 function configRoot(target, tool) {
   return join(target, tool === "opencode" ? ".opencode" : `.${tool}`);
 }
@@ -47,10 +62,8 @@ function assertSkillInstallation(installedSkill, source, plugin, skill) {
   assert.equal(lstatSync(installedSkill).isSymbolicLink(), shouldLink);
   if (!shouldLink) return;
   assert.equal(isAbsolute(readlinkSync(installedSkill)), false);
-  const definition = JSON.parse(readFileSync(
-    join(repositoryRoot, "plugins", plugin, "plugin-sources.json"),
-    "utf8",
-  ));
+  const definition = pluginSourceDefinition(repositoryRoot, plugin);
+  assert.ok(definition, `missing source definition for ${plugin}`);
   const relativeSkill = definition.skills.find((candidate) => candidate.split("/").at(-1) === skill);
   assert.ok(relativeSkill, `missing source mapping for ${plugin}/${skill}`);
   assert.equal(
@@ -92,9 +105,11 @@ function installWithSourceInit(plugin, tool) {
   const sandbox = createSandbox(`cannbot-init-${plugin}-${tool}-`);
   const target = join(sandbox, "project");
   mkdirSync(target);
-  const init = join(repositoryRoot, "plugins", plugin, "init.sh");
+  const sourceDefinition = pluginSourceDefinition(repositoryRoot, plugin);
+  const pluginRoot = sourceDefinition?.pluginRoot ?? join(repositoryRoot, "plugins", plugin);
+  const init = join(pluginRoot, "init.sh");
   const result = spawnSync("bash", [init, "project", tool, target], {
-    cwd: join(repositoryRoot, "plugins", plugin),
+    cwd: pluginRoot,
     encoding: "utf8",
     env: {
       ...process.env,
@@ -184,6 +199,7 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
     assert.ok(existsSync(resolve(repositoryRoot, plugin.source)), plugin.source);
   }
   assert.deepEqual(officialPlugins.map((plugin) => plugin.name).sort(), expectedPlugins);
+  assert.equal(entries.has("model-train-precision-diagnose"), false);
   assert.equal(marketplace.owner.url, "https://gitcode.com/cann/cannbot");
   for (const plugin of officialPlugins) {
     assert.equal(plugin.source, `./plugins/${plugin.name}`);
@@ -240,7 +256,7 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
   }
 });
 
-test("package bundle includes the official plugin license", () => {
+test("package bundle includes plugin licenses", () => {
   assert.equal(
     readFileSync(join(packageRoot, "dist", "plugins", "LICENSE"), "utf8"),
     readFileSync(join(repositoryRoot, "plugins", "LICENSE"), "utf8"),
@@ -257,6 +273,14 @@ test("package bundle includes the official plugin license", () => {
       readFileSync(join(repositoryRoot, source.skillsRepository, "LICENSE"), "utf8"),
     );
   }
+  assert.equal(
+    readFileSync(join(packageRoot, "dist", "plugins", "model-train-precision-diagnose", "LICENSE"), "utf8"),
+    readFileSync(join(repositoryRoot, "plugins-community", "model-train-precision-diagnose", "LICENSE"), "utf8"),
+  );
+  assert.equal(
+    readFileSync(join(packageRoot, "dist", "plugins", "model-train-precision-diagnose", "SKILLS_LICENSE"), "utf8"),
+    readFileSync(join(repositoryRoot, "vendor", "cannbot-skills", "LICENSE"), "utf8"),
+  );
 });
 
 for (const source of sources) {
@@ -337,6 +361,76 @@ for (const source of sources) {
   }
 }
 
+const trainPrecisionSkills = [
+  "model-train-precision-numerical-mismatch",
+  "model-train-precision-nonfinite",
+  "model-train-precision-determinism",
+  "model-train-log-visualization",
+];
+const trainPrecisionAgents = [
+  "model-train-precision-scope-reducer-agent",
+  "model-train-precision-numerical-mismatch-agent",
+  "model-train-precision-nonfinite-agent",
+  "model-train-precision-determinism-agent",
+  "model-train-precision-reviewer-agent",
+];
+const trainPrecisionReferences = [
+  "cluster-execution-and-artifact-plane.md",
+  "dump-integrity-and-compare-gate.md",
+  "evidence-and-risk-policy.md",
+  "intake-routing.md",
+  "optional-hardware-and-silent-error-checks.md",
+  "preflight-checklist.md",
+  "record-templates.md",
+  "reviewer-contract.md",
+  "scope-reduction.md",
+  "subagent-prompt-templates.md",
+  "tool-semantics-and-version-probe.md",
+];
+
+for (const source of sources) {
+  for (const tool of tools) {
+    test(`${source} installs model-train-precision-diagnose for ${tool}`, () => {
+      const plugin = "model-train-precision-diagnose";
+      const { target } = installPlugin(plugin, tool, source);
+      const root = configRoot(target, tool);
+      const agentExtension = tool === "codex" ? ".toml" : ".md";
+      const workflowRoot = join(target, ".cannbot", "plugins", plugin, "workflows");
+      const installedReferencePrefix = `.cannbot/plugins/${plugin}/workflows/references/`;
+
+      for (const skill of trainPrecisionSkills) {
+        const installedSkill = join(skillRoot(target, tool), skill);
+        assert.equal(existsSync(join(installedSkill, "SKILL.md")), true);
+        assertSkillInstallation(installedSkill, source, plugin, skill);
+      }
+      for (const agent of trainPrecisionAgents) {
+        const installedAgent = join(root, "agents", `${agent}${agentExtension}`);
+        assert.equal(existsSync(installedAgent), true);
+        const content = readFileSync(installedAgent, "utf8");
+        assert.equal(content.includes(installedReferencePrefix), true);
+        assert.doesNotMatch(content, /\.\.\/(?:\.cannbot|references|workflows)\//);
+      }
+
+      assert.equal(existsSync(join(workflowRoot, "precision-diagnose-workflow.md")), true);
+      for (const reference of trainPrecisionReferences) {
+        assert.equal(existsSync(join(workflowRoot, "references", reference)), true);
+      }
+
+      const instructionsPath = join(target, tool === "claude" ? "CLAUDE.md" : "AGENTS.md");
+      const instructions = readFileSync(instructionsPath, "utf8");
+      assert.equal(instructions.includes(installedReferencePrefix), true);
+      assert.doesNotMatch(instructions, /\.\.\/(?:\.cannbot|references|workflows)\//);
+
+      const record = readPluginRecord(target, tool, plugin);
+      assert.equal(record.skills.length, 4);
+      assert.equal(record.agents.length, 5);
+      assert.equal(record.source.kind, source);
+      assert.equal(record.skillInstallMode, source === "repository" ? "symlink" : "copy");
+      assertUnifiedInstall(target, tool, plugin);
+    });
+  }
+}
+
 for (const plugin of ["ascendc-st-design", "model-infer-optimize"]) {
   test(`${plugin} source init delegates to the unified installer`, () => {
     const { target } = installWithSourceInit(plugin, "opencode");
@@ -347,6 +441,20 @@ for (const plugin of ["ascendc-st-design", "model-infer-optimize"]) {
     assertUnifiedInstall(target, "opencode", plugin);
   });
 }
+
+test("model-train-precision-diagnose source init delegates to the unified installer", () => {
+  const plugin = "model-train-precision-diagnose";
+  const { target } = installWithSourceInit(plugin, "opencode");
+  const record = readPluginRecord(target, "opencode", plugin);
+  assert.equal(record.skillInstallMode, "symlink");
+  assert.equal(record.skills.length, 4);
+  assert.equal(record.agents.length, 5);
+  assert.equal(
+    existsSync(join(target, ".cannbot", "plugins", plugin, "workflows", "references", "tool-semantics-and-version-probe.md")),
+    true,
+  );
+  assertUnifiedInstall(target, "opencode", plugin);
+});
 
 test("ops-direct-invoke source init uses the unified installer", () => {
   const { target } = installWithSourceInit("ops-direct-invoke", "opencode");

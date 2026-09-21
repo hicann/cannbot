@@ -1,0 +1,10 @@
+{
+  "skillsRepository": "vendor/cannbot-skills",
+  "skillInstallMode": "symlink",
+  "skills": [
+    "model/model-train-precision-numerical-mismatch",
+    "model/model-train-precision-nonfinite",
+    "model/model-train-precision-determinism",
+    "model/model-train-log-visualization"
+  ]
+}
