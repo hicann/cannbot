@@ -170,9 +170,11 @@ nodes:
     title: Generate the requirements analysis document REQUIREMENTS.md
     goal:
       - "Produce $WORK_DIR/requirements/REQUIREMENTS.md for the operator described in $USER_PROMPT, covering its functional scope, inputs/outputs, and constraints, along with the research intermediates under $WORK_DIR/requirements/research/."
+      - "The CANN-side research anchors on the existing (A2/A3-era) implementation and produces three artifacts under $WORK_DIR/requirements/research/cann/: code_walkthrough.md (call-chain walkthrough), code_design.md (deliverable coverage + analysis), and formula.md (formula extracted from the existing kernel's Compute method — the semantic anchor of the operator's math, reference evidence for downstream design/golden tasks)."
     approach:
       - "First read the customer requirement from the file named by $USER_PROMPT (the user prompt); extract the operator name and any specified runtime environment, invocation, network, dtype, or shape requirements."
-      - "Load the ops-requirement-analysis skill first (mandatory) and follow its pipeline: stage 1 name resolution, stage 2 three-way research (model / competitor / CANN), stage 3 requirement summary per its references/output_template.md."
+      - "Load the ops-requirement-analysis skill first (mandatory) and follow its pipeline: stage 1 name resolution, stage 2 three-way research (model / competitor / CANN) with decision priority — math semantics and formula follow the competitor implementation (the primary semantic baseline and reference-oracle source); signatures, dtypes and deliverable facts follow the official IR when it hits (built-in or generation-gap operators — the only truth source against same-name ambiguity), and follow the competitor interface as the design baseline when IR misses (brand-new operators: aclnn mirrors PyTorch, GEIR mirrors TensorFlow, with the basis recorded); stage 3 requirement summary per its references/output_template.md."
+      - "Load the cannbot-knowledge knowledge base at $WORK_DIR/cannbot-knowledge and query it for this operator and its key CANN/Ascend C APIs; reuse $WORK_DIR/knowledge/preflight.md when present, cite source card paths in the requirement research, and record no-hit topics explicitly."
       - "Treat $WORK_DIR/requirements/references/ (cann/, ascend/, competitor/ subdirectories) as the skill's reference/ tree for empirical source search."
       - "Consult the local built-in proto at $ASCEND_OPP_PATH/built-in/op_proto/inc/ as the highest-authority CANN fact source."
       - "Use the chip platform recorded in $WORK_DIR/npu-arch.json as the runtime-environment evidence."
@@ -183,7 +185,15 @@ nodes:
       - "Supported data types, chip platform / runtime environment, and the operator formula are all traceable in the document."
       - "No bare COPY: directives remain; table of contents entries match the body headings."
       - "The §7.4 performance requirement section lists at least 4 concrete key shapes, states the source route (A / B / both not applicable), and fills in no target values."
-      - "req-verifier reviews the document item by item per agents/req-verifier.md; every check passes."
+      - "$WORK_DIR/requirements/research/cann/ contains code_walkthrough.md, code_design.md and formula.md; when no kernel source was found, formula.md carries an explicit 'Kernel code missing' note instead of invented line-level evidence."
+      - "Brand-new operator (no CANN implementation at any level: ops-* / canndev / built-in proto all missed): code_design.md marks every deliverable ❌ and states 'CANN has no existing implementation; A5 is greenfield development'; formula.md then derives from competitor/paper formulas with sources noted."
+      - "Each located competitor framework produces research/opensource/{framework}/code_walkthrough.md, code_design.md and formula.md; competitor formula.md carries source file:line references, and code_design.md states the op's forward/backward identity."
+      - "model_research.md marks graded sources (arxiv / github / huggingface) on its reference links."
+      - "§8.1 deliverables derive from the §7.3 invocation method per the mapping table (union for combined invocations), no fixed all-yes list; for a generation-gap (代际补齐) scenario, §8.2 declares the capability union is not narrowed plus the new-kernel subset + IsAiCoreSupport dispatch/fallback."
+      - "formula.md is extracted from the existing kernel's Compute method (not via TensorFlow mapping); kernel dtype branches are listed separately, and every magic-number constant carries a source file:line reference."
+      - "Variant full coverage: every tiling/kernel variant in the overview tables has its own detailed subsection (compute flow + buffer allocation + tiling strategy); no 'same as template 1' skips."
+      - "Framework registration is enumerated per evidence: any found plugin (TF/ONNX/Caffe) is listed with its ParseParams attribute mapping and registration code, each marked ✅/❌; none found is recorded as ❌, never silently omitted."
+      - "The verifier reviews the document item by item against the fixed section, COPY, numbering, TOC, research, performance, and API requirements; every check passes."
     out_of_scope:
       - "Do not write spec.yaml, DESIGN.md, or any implementation code; this task only produces the requirements document and its research intermediates."
     depends_on:
