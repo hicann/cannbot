@@ -106,7 +106,7 @@ function installWithSourceInit(plugin, tool) {
   const target = join(sandbox, "project");
   mkdirSync(target);
   const sourceDefinition = pluginSourceDefinition(repositoryRoot, plugin);
-  const pluginRoot = sourceDefinition?.pluginRoot ?? join(repositoryRoot, "plugins", plugin);
+  const pluginRoot = sourceDefinition?.pluginRoot ?? join(repositoryRoot, "plugins-official", plugin);
   const init = join(pluginRoot, "init.sh");
   const result = spawnSync("bash", [init, "project", tool, target], {
     cwd: pluginRoot,
@@ -145,7 +145,7 @@ function assertUnifiedInstall(target, tool, plugin) {
 
 test("repository maps every official plugin to the Skill submodule", () => {
   for (const plugin of ["ops-direct-invoke", "ascendc-st-design", "model-infer-optimize"]) {
-    const root = join(repositoryRoot, "plugins", plugin);
+    const root = join(repositoryRoot, "plugins-official", plugin);
     assert.equal(existsSync(join(root, ".claude-plugin", "plugin.json")), true);
     assert.equal(existsSync(join(root, ".codex-plugin", "plugin.json")), true);
     assert.equal(existsSync(join(root, "plugin-sources.json")), true);
@@ -164,20 +164,20 @@ test("repository maps every official plugin to the Skill submodule", () => {
     const codexManifest = JSON.parse(readFileSync(join(root, ".codex-plugin", "plugin.json"), "utf8"));
     assert.equal(codexManifest.homepage, "https://gitcode.com/cann/cannbot");
     assert.equal(codexManifest.repository, "https://gitcode.com/cann/cannbot");
-    const trackedFiles = spawnSync("git", ["ls-files", "-s", `plugins/${plugin}`], {
+    const trackedFiles = spawnSync("git", ["ls-files", "-s", `plugins-official/${plugin}`], {
       cwd: repositoryRoot,
       encoding: "utf8",
     });
     assert.equal(trackedFiles.status, 0, trackedFiles.stderr);
     assert.equal(trackedFiles.stdout.split("\n").some((line) => line.startsWith("120000 ")), false);
   }
-  // ops-direct-invoke ships self-contained workflow skills in plugins/<id>/skills/;
+  // ops-direct-invoke ships self-contained workflow skills in plugins-official/<id>/skills/;
   // the other two plugins resolve all skills from the submodule only.
-  assert.equal(existsSync(join(repositoryRoot, "plugins", "ops-direct-invoke", "skills")), true);
-  assert.equal(existsSync(join(repositoryRoot, "plugins", "ascendc-st-design", "skills")), false);
-  assert.equal(existsSync(join(repositoryRoot, "plugins", "model-infer-optimize", "skills")), false);
+  assert.equal(existsSync(join(repositoryRoot, "plugins-official", "ops-direct-invoke", "skills")), true);
+  assert.equal(existsSync(join(repositoryRoot, "plugins-official", "ascendc-st-design", "skills")), false);
+  assert.equal(existsSync(join(repositoryRoot, "plugins-official", "model-infer-optimize", "skills")), false);
   assert.equal(existsSync(join(repositoryRoot, "vendor", "cannbot-skills", ".git")), true);
-  for (const removed of ["catalog", "plugins-official", "ops", "infra", "model"]) {
+  for (const removed of ["catalog", "ops", "infra", "model", "plugins"]) {
     assert.equal(existsSync(join(repositoryRoot, removed)), false, `${removed} should not exist at repository root`);
   }
 });
@@ -202,9 +202,9 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
   assert.equal(entries.has("model-train-precision-diagnose"), false);
   assert.equal(marketplace.owner.url, "https://gitcode.com/cann/cannbot");
   for (const plugin of officialPlugins) {
-    assert.equal(plugin.source, `./plugins/${plugin.name}`);
+    assert.equal(plugin.source, `./plugins-official/${plugin.name}`);
     const manifest = JSON.parse(readFileSync(
-      join(repositoryRoot, "plugins", plugin.name, ".claude-plugin", "plugin.json"),
+      join(repositoryRoot, "plugins-official", plugin.name, ".claude-plugin", "plugin.json"),
       "utf8",
     ));
     assert.equal(plugin.version, manifest.version);
@@ -215,7 +215,7 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
     assert.equal(manifest.skills, undefined);
 
     const sourceDefinition = JSON.parse(readFileSync(
-      join(repositoryRoot, "plugins", plugin.name, "plugin-sources.json"),
+      join(repositoryRoot, "plugins-official", plugin.name, "plugin-sources.json"),
       "utf8",
     ));
     const marketplaceSkills = (manifest.dependencies ?? []).flatMap((dependency) => {
@@ -242,11 +242,11 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
     ));
     assert.equal(bundledManifest.dependencies, undefined);
     // The bundled manifest lists the union of submodule skills (plugin-sources.json)
-    // and any self-contained skills shipped inside the plugin (plugins/<id>/skills/).
+    // and any self-contained skills shipped inside the plugin (plugins-official/<id>/skills/).
     const bundledSkills = bundledManifest.skills.map((skill) => skill.replace(/^\.\/skills\//, "")).sort();
     const submoduleSkills = sourceDefinition.skills.map((skill) => skill.split("/").at(-1)).sort();
     const selfContainedSkills = [];
-    const selfContainedRoot = join(repositoryRoot, "plugins", plugin.name, "skills");
+    const selfContainedRoot = join(repositoryRoot, "plugins-official", plugin.name, "skills");
     if (existsSync(selfContainedRoot)) {
       for (const entry of readdirSync(selfContainedRoot)) {
         if (existsSync(join(selfContainedRoot, entry, "SKILL.md"))) selfContainedSkills.push(entry);
@@ -259,15 +259,15 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
 test("package bundle includes plugin licenses", () => {
   assert.equal(
     readFileSync(join(packageRoot, "dist", "plugins", "LICENSE"), "utf8"),
-    readFileSync(join(repositoryRoot, "plugins", "LICENSE"), "utf8"),
+    readFileSync(join(repositoryRoot, "plugins-official", "LICENSE"), "utf8"),
   );
   for (const plugin of ["ascendc-st-design", "model-infer-optimize", "ops-direct-invoke"]) {
     assert.equal(
       readFileSync(join(packageRoot, "dist", "plugins", plugin, "LICENSE"), "utf8"),
-      readFileSync(join(repositoryRoot, "plugins", "LICENSE"), "utf8"),
+      readFileSync(join(repositoryRoot, "plugins-official", "LICENSE"), "utf8"),
     );
     const source = JSON.parse(readFileSync(
-      join(repositoryRoot, "plugins", plugin, "plugin-sources.json"), "utf8"));
+      join(repositoryRoot, "plugins-official", plugin, "plugin-sources.json"), "utf8"));
     assert.equal(
       readFileSync(join(packageRoot, "dist", "plugins", plugin, "SKILLS_LICENSE"), "utf8"),
       readFileSync(join(repositoryRoot, source.skillsRepository, "LICENSE"), "utf8"),
@@ -468,7 +468,7 @@ test("ops-direct-invoke source init uses the unified installer", () => {
 test("source init defaults to the source repository root and reads the manifest name", () => {
   const sandbox = createSandbox("cannbot-init-default-");
   const fixtureRepository = join(sandbox, "repository");
-  const pluginDir = join(fixtureRepository, "plugins", "fixture-plugin");
+  const pluginDir = join(fixtureRepository, "plugins-official", "fixture-plugin");
   const fixtureCli = join(fixtureRepository, "script", "bin", "cannbot.js");
   const capture = join(sandbox, "args.json");
   mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
@@ -633,7 +633,7 @@ test("declarative dependencies use the same project-level install flow", () => {
 
   const plugin = "dependency-fixture";
   const bundleRoot = join(sandbox, "bundle");
-  const pluginRoot = join(bundleRoot, "plugins", plugin);
+  const pluginRoot = join(bundleRoot, "plugins-official", plugin);
   const skillsRepository = join(bundleRoot, "skills-repository");
   const fixtureSkill = join(skillsRepository, "fixture-skill");
   mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });

@@ -25,7 +25,7 @@
 flowchart LR
     SKILL_REPO["cannbot-skills"]
     SUBMODULE["vendor/cannbot-skills"]
-    PLUGIN["plugins/&lt;plugin&gt;<br/>Agents · Workflows · Hooks"]
+    PLUGIN["plugins-official/&lt;plugin&gt;<br/>Agents · Workflows · Hooks"]
     MAPPING["plugin-sources.json"]
     INSTALLER["统一安装器"]
     DIST["npm 自包含包"]
@@ -39,13 +39,13 @@ flowchart LR
     PLUGIN --> DIST
 ```
 
-源码执行 `plugins/<plugin>/init.sh` 时，安装器按需初始化 submodule，并在目标客户端目录创建相对 Skill 软链。npm 安装直接使用发布包内的 Skill 副本，不依赖 submodule。
+源码执行 `plugins-official/<plugin>/init.sh` 时，安装器按需初始化 submodule，并在目标客户端目录创建相对 Skill 软链。npm 安装直接使用发布包内的 Skill 副本，不依赖 submodule。
 
 ## 目录结构
 
 ```text
 cannbot/
-├── plugins/                         # 官方插件
+├── plugins-official/                         # 官方插件
 │   └── <plugin>/
 │       ├── .claude-plugin/          # Claude Plugin manifest
 │       ├── .codex-plugin/           # Codex Plugin manifest
@@ -129,7 +129,7 @@ npm --prefix script run pack:smoke
 | 修改类型 | 提交位置 |
 |----------|----------|
 | Skill 知识、脚本、模板或参考资料 | [`cannbot-skills`](https://gitcode.com/cann/cannbot-skills) |
-| 官方插件内容或 Skill 组合 | [`plugins/`](../plugins/) |
+| 官方插件内容或 Skill 组合 | [`plugins-official/`](../plugins-official/) |
 | 社区插件 | [`plugins-community/`](../plugins-community/) |
 | npm 安装、组装或客户端适配 | [`script/`](../script/) |
 | Skill 版本升级 | Skill 仓先合入，本仓再更新 submodule gitlink |

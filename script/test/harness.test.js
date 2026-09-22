@@ -12,7 +12,7 @@ import { assemblePlugins } from '../lib/plugin-bundle.js';
 
 const repository = resolve(import.meta.dirname, '../..');
 const plugin = 'ops-direct-invoke';
-const sourceDirectory = 'plugins/ops-direct-invoke';
+const sourceDirectory = 'plugins-official/ops-direct-invoke';
 const bundleDirectory = 'dist/plugins/ops-direct-invoke';
 const entry = 'ops-direct-invoke';
 const requirement = 'repo-requirement';
@@ -406,9 +406,9 @@ test('ops-direct-invoke assembles and installs from a self-contained source layo
   const box = sandbox(t);
   const isolated = join(box.root, 'independent source');
   mkdirSync(join(isolated, '.git'), { recursive: true });
-  mkdirSync(join(isolated, 'plugins'));
+  mkdirSync(join(isolated, 'plugins-official'), { recursive: true });
   cpSync(join(repository, 'LICENSE'), join(isolated, 'LICENSE'));
-  cpSync(join(repository, 'plugins/LICENSE'), join(isolated, 'plugins/LICENSE'));
+  cpSync(join(repository, 'plugins-official/LICENSE'), join(isolated, 'plugins-official/LICENSE'));
   cpSync(join(repository, sourceDirectory), join(isolated, sourceDirectory), { recursive: true });
   // Only the common framework and domain Skill repository are shared with the source tree.
   symlinkSync(join(repository, 'harness'), join(isolated, 'harness'), 'dir');

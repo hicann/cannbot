@@ -86,7 +86,7 @@ function parseArgs(argv) {
 }
 
 function resolvePluginDir(repoPath, pluginId) {
-  for (const parent of ["plugins", "plugins-community", join("dist", "plugins")]) {
+  for (const parent of ["plugins-official", "plugins-community", join("dist", "plugins")]) {
     const candidate = join(repoPath, parent, pluginId);
     if (existsSync(join(candidate, ".claude-plugin", "plugin.json"))
         && existsSync(join(candidate, "skills"))) return candidate;
@@ -275,7 +275,7 @@ function resolveSourceSkills(repositoryRoot, sourceDefinition) {
     addSkill(source, sourceDefinition.definitionPath);
   }
 
-  // Self-contained workflow skills shipped inside plugins/<id>/skills/.
+  // Self-contained workflow skills shipped inside plugins-official/<id>/skills/.
   const selfContainedRoot = join(sourceDefinition.pluginRoot, "skills");
   if (existsSync(selfContainedRoot)) {
     for (const entry of readdirSync(selfContainedRoot, { withFileTypes: true })) {
@@ -552,7 +552,7 @@ function installOpenCodePlugin(target) {
 
 // ---------------------------------------------------------------------------
 // Workflow runtime assets (skill-driven workflow plugins).
-// These mirror the plugins/<id>/init.sh "default workspace" behavior so the
+// These mirror the plugins-official/<id>/init.sh "default workspace" behavior so the
 // npm install path produces the same runtime scaffolding (permissions,
 // settings.json, per-client permission-guard hooks).
 // ---------------------------------------------------------------------------

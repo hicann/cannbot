@@ -5,7 +5,7 @@
 普通用户在目标项目中执行各插件下方的 `npx` 命令。源码安装进入对应插件目录执行：
 
 ```bash
-cd plugins/<plugin>
+cd plugins-official/<plugin>
 bash init.sh
 ```
 

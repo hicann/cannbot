@@ -20,7 +20,7 @@
 
 ```bash
 git clone --recurse-submodules --shallow-submodules https://gitcode.com/cann/cannbot.git
-cd cannbot/plugins/model-infer-optimize
+cd cannbot/plugins-official/model-infer-optimize
 bash init.sh
 ```
 
@@ -60,7 +60,7 @@ claude plugin list
 
 ```bash
 git clone --recurse-submodules https://gitcode.com/cann/cannbot.git
-cd cannbot/plugins/model-infer-optimize
+cd cannbot/plugins-official/model-infer-optimize
 bash init.sh project claude /path/to/target-project
 ```
 
@@ -73,7 +73,7 @@ bash init.sh project claude /path/to/target-project
 
 ```bash
 git clone --recurse-submodules https://gitcode.com/cann/cannbot.git
-cd cannbot/plugins/model-infer-optimize
+cd cannbot/plugins-official/model-infer-optimize
 bash init.sh project trae /path/to/target-project
 ```
 
@@ -128,8 +128,8 @@ primary agent 会按 AGENTS.md 中的强制规则自动读取 `workflows/optimiz
 | 内容 | 说明 |
 | --- | --- |
 | 原子 skills（14 个） | 来自 `skills/model-infer-*`，覆盖推理优化各专项能力 |
-| workflow 文档 | `plugins/model-infer-optimize/workflows/optimize-workflow.md` |
-| Subagents | `plugins/model-infer-optimize/agents/model-infer-*.md` |
+| workflow 文档 | `plugins-official/model-infer-optimize/workflows/optimize-workflow.md` |
+| Subagents | `plugins-official/model-infer-optimize/agents/model-infer-*.md` |
 | hooks | 角色越界保护、progress.md 读取约束、自验证检查和长任务提醒 |
 | 配置入口 | `AGENTS.md` / `CLAUDE.md`，强制读取 `workflows/optimize-workflow.md` |
 
@@ -196,13 +196,13 @@ bash init.sh --help
 
 ```bash
 # OpenCode (init.sh 方式)
-cd cannbot/plugins/model-infer-optimize && bash init.sh
+cd cannbot/plugins-official/model-infer-optimize && bash init.sh
 
 # Claude Code
 /plugin update model-infer-optimize@cannbot
 
 # TRAE
-cd cannbot/plugins/model-infer-optimize && bash init.sh project trae
+cd cannbot/plugins-official/model-infer-optimize && bash init.sh project trae
 
 ```
 

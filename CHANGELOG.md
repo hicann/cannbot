@@ -2,6 +2,12 @@
 
 This file records notable changes to the CANNBot plugin orchestration and delivery repository.
 
+## Unreleased
+
+### Changed
+
+- Renamed the official plugin directory `plugins/` to `plugins-official/`, aligning with the `cannbot-skills` repository layout and pairing with `plugins-community/`; updated the marketplace sources, installer discovery paths, bundling, tests, and documentation accordingly. The npm package layout (`dist/plugins/`) and the installed layout (`.cannbot/plugins/`) are unchanged.
+
 ## 1.3.2 - 2026-08-31
 
 ### Changed

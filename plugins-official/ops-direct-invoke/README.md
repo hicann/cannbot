@@ -159,13 +159,13 @@ Codex provider 的 CLI 替身黑盒测试覆盖验收裁决与重试反馈：ver
 在 cannbot 根目录运行所有工作流 UT：
 
 ```bash
-python3 plugins/ops-direct-invoke/test/ut/test_all.py
+python3 plugins-official/ops-direct-invoke/test/ut/test_all.py
 ```
 
 可从任意目录调用；测试使用临时工作目录，结束后自动清理。依赖 Python 3.9+、PyYAML 和本仓公共 harness，使用前台模拟执行，不需要 tmux、真实 Agent CLI 或 NPU。harness 位于其它位置时传 `--harness-skill /absolute/workflow-orchestrator`，总入口会透传给每个测试类型。单独执行某类时使用相同参数约定，例如：
 
 ```bash
-python3 plugins/ops-direct-invoke/test/ut/workflow_execution/test.py
+python3 plugins-official/ops-direct-invoke/test/ut/workflow_execution/test.py
 ```
 
 | 测试类型 | 看护内容 |

@@ -24,10 +24,10 @@ function assertInside(root, candidate, label) {
 }
 
 export function pluginSourceDefinition(repositoryRoot, pluginId, pluginDirectory = null) {
-  const pluginRoot = pluginDirectory ?? ["plugins", "plugins-community"]
+  const pluginRoot = pluginDirectory ?? ["plugins-official", "plugins-community"]
     .map((parent) => join(repositoryRoot, parent, pluginId))
     .find((candidate) => existsSync(join(candidate, "plugin-sources.json")))
-    ?? join(repositoryRoot, "plugins", pluginId);
+    ?? join(repositoryRoot, "plugins-official", pluginId);
   const definitionPath = join(pluginRoot, "plugin-sources.json");
   if (!existsSync(definitionPath)) return null;
   const definition = readJson(definitionPath);
@@ -41,8 +41,8 @@ export function pluginSourceDefinition(repositoryRoot, pluginId, pluginDirectory
 }
 
 export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
-  const sourcePluginRoot = join(repositoryRoot, "plugins");
-  const pluginIds = selectedPluginIds ?? ["plugins", "plugins-community"].flatMap((parent) => {
+  const sourcePluginRoot = join(repositoryRoot, "plugins-official");
+  const pluginIds = selectedPluginIds ?? ["plugins-official", "plugins-community"].flatMap((parent) => {
     const root = join(repositoryRoot, parent);
     return existsSync(root) ? readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "plugin-sources.json")))
