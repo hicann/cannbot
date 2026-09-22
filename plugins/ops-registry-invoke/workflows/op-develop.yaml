@@ -5,6 +5,28 @@ workflow: op-develop
 max_parallel: 10
 system_prompt: If needed, dispatch multi subagents to explore code under $WORK_DIR/requirements/references(if exists) relevant to this task, as development reference.
 nodes:
+  - id: knowledge-preflight
+    task_type: normal
+    title: Set up and query the cannbot-knowledge knowledge base
+    executor: general-executor
+    verifier: general-verifier
+    depends_on: []
+    goal:
+      - "Set up the cannbot-knowledge knowledge base at $WORK_DIR/cannbot-knowledge and query it for knowledge relevant to the operator in the task prompt; write the distilled findings to $WORK_DIR/knowledge/preflight.md."
+    approach:
+      - "The knowledge root is $WORK_DIR/cannbot-knowledge. If it has no .git subdirectory, run `git clone --depth 1 https://gitcode.com/cann/cannbot-knowledge.git $WORK_DIR/cannbot-knowledge`; otherwise skip the clone."
+      - "If $WORK_DIR/cannbot-knowledge/artifacts/indexes/knowledge.sqlite3 is missing, run `python3 -m pip install -r $WORK_DIR/cannbot-knowledge/requirements.txt`, `bash $WORK_DIR/cannbot-knowledge/get_resources.sh`, and `python3 $WORK_DIR/cannbot-knowledge/.agents/skills/knowledge-query/scripts/knowledge_index.py --knowledge-root $WORK_DIR/cannbot-knowledge build`; if the index already exists, skip all three."
+      - "Run `python3 $WORK_DIR/cannbot-knowledge/.agents/skills/knowledge-query/scripts/knowledge_query.py --knowledge-root $WORK_DIR/cannbot-knowledge discover` once, then query for the operator name, its math semantics, and the key CANN/Ascend C APIs mentioned in the task prompt."
+      - "For each promising hit, read the full card at the returned path; follow card resource/sources links only when the card is insufficient."
+      - "Write $WORK_DIR/knowledge/preflight.md: per topic, the distilled facts (API contracts, platform limits, tiling/UB constraints, known pitfalls), each citing its source card path. Record zero-hit queries explicitly as 'no coverage' — do not treat them as errors."
+    acceptance:
+      - "$WORK_DIR/knowledge/preflight.md exists and is non-empty."
+      - "Every fact in it cites a card path under $WORK_DIR/cannbot-knowledge; queries with no hits are listed explicitly."
+    out_of_scope:
+      - "The knowledge repository is read-only except for its own setup artifacts (indexes, downloaded resources); do not modify any knowledge card."
+      - "Do not create or modify any file outside $WORK_DIR/cannbot-knowledge/ and $WORK_DIR/knowledge/."
+    max_retries: 1
+    on_exhaust: continue
   - id: detect-npu-arch
     task_type: normal
     title: Detect the current platform's NPU arch
