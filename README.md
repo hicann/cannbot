@@ -32,20 +32,19 @@ bash init.sh
 
 | 插件 | 能力 |
 |------|------|
-| [`ops-direct-invoke`](plugins-official/ops-direct-invoke/) | 基于 harness 的 Ascend C 直调算子开发工作流，支持技术穿刺、执行与验收、仓库知识覆写 |
+| [`ops-direct-invoke`](plugins-official/ops-direct-invoke/) | Ascend C 直调算子开发：以 `<<<>>>` 直接调用核函数的方式接入 |
+| [`ops-registry-invoke`](plugins-official/ops-registry-invoke/) | Ascend C 注册算子开发：经 ACLNN / GEIR 接入框架，以标准算子形式调用 |
 | [`ascendc-st-design`](plugins-official/ascendc-st-design/) | Ascend C 算子 L0/L1/L2 ST 用例设计 |
 | [`model-infer-optimize`](plugins-official/model-infer-optimize/) | NPU 模型迁移、精度对齐与推理性能优化 |
-| [`ops-registry-invoke`](plugins-official/ops-registry-invoke/) | ACLNN算子开发工作流 |
 
 ## 🧩 社区插件
 
-| 插件 | 能力 |
-|------|------|
-| [`model-train-precision-diagnose`](plugins-community/model-train-precision-diagnose/) | PyTorch on Ascend NPU 训练有限值偏差、NaN/Inf/Overflow 与确定性异常诊断 |
+社区插件属实验孵化性质，清单与完整介绍见 [社区插件介绍](docs/community-plugins.md)。
 
 ## 📖 文档
 
 - [插件安装与工作流](script/docs/cannbot-workflows.md)
+- [社区插件介绍](docs/community-plugins.md)
 - [仓库架构与维护](docs/repository-guide.md)
 - [插件目录说明](plugins-official/README.md)
 - [npm 构建与发布](script/README.md)
