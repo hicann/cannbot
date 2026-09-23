@@ -231,31 +231,25 @@ nodes:
     task_type: normal
     executor: general-executor
     verifier: general-verifier
-    title: Bootstrap the operator package from the closest sample
+    title: Initialize and verify the operator package from the registry-invoke template
     goal:
-      - "Initialize a buildable, ACLNN-verified custom operator package at $WORK_DIR/op/ by copying the closest sample from the plugin's operators/ directory and renaming it to the target operator; the run package installs into $WORK_DIR/dev-package/."
-      - "Prove the ACLNN test passes against that install, and record evidence that both the header the test compiles against and the library it loads at runtime come from $WORK_DIR/dev-package/."
+      - "Initialize the complete operator package from the ascendc-registry-invoke-template skill into $WORK_DIR/op/, rename it to the target operator, and verify the template's example test."
     approach:
       - "Derive the operator's three name forms from spec.yaml: OP_SNAKE = op.name, OP_PASCAL = PascalCase, OP_UPPER = UPPER_SNAKE."
-      - "Resolve the sample source directory: WORKFLOW_YAML=$(python3 -c \"import json; print(json.load(open('$WORK_DIR/.workflow/status.json'))['workflow'])\") ; OPERATORS_DIR=$(dirname \"$(dirname \"$WORKFLOW_YAML\")\")/operators ; test -d $OPERATORS_DIR — the samples live one level up from the workflow yaml (per status.json's workflow key), never under $WORK_DIR."
-      - "Select the closest sample under $OPERATORS_DIR by the spec's op.paradigms (same-shape elementwise -> add_custom_package; broadcast -> scale_custom_package); record the chosen sample's snake/Pascal/UPPER forms as SAMPLE_SNAKE/SAMPLE_PASCAL/SAMPLE_UPPER."
-      - "mkdir -p $WORK_DIR/op && cp -r $OPERATORS_DIR/<SAMPLE_SNAKE>_package/. $WORK_DIR/op/ — flatten so $WORK_DIR/op/ is the package root."
-      - "Adapt $WORK_DIR/op/build.sh: build its own directory (drop the package-name argument), and run the generated .run with --install-path=$WORK_DIR/dev-package (mkdir -p first) so the package lands under $WORK_DIR/dev-package/vendors/<OP_PASCAL>/."
-      - "Rename every file under $WORK_DIR/op/ whose name contains SAMPLE_SNAKE to OP_SNAKE, then replace the three name forms in every file's content: SAMPLE_PASCAL->OP_PASCAL, SAMPLE_SNAKE->OP_SNAKE, SAMPLE_UPPER->OP_UPPER; also remove every trace of the other candidate sample's name forms so the full sample-name set is gone (the no-residue acceptance greps add_custom|AddCustom|ADD_CUSTOM|scale_custom|ScaleCustom|SCALE_CUSTOM)."
-      - "Update the ACLNN test to consume the dev-package install: fix tests/aclnn/run.sh's build.sh path (the package is now one level shallower) and drop its package-name argument; point the test's include/link directories and LD_LIBRARY_PATH at $WORK_DIR/dev-package/vendors/<OP_PASCAL>/op_api/ instead of the system opp vendors directory; export ASCEND_CUSTOM_OPP_PATH=$WORK_DIR/dev-package/vendors/<OP_PASCAL> (or source the installed package's bin/set_env.bash) so the ACLNN/OpAPI runtime discovers the vendor op and its kernel from the dev-package install."
-      - "Build and run the ACLNN test, writing $WORK_DIR/op/tests/aclnn/verify.log with the compile header path, the ASCEND_CUSTOM_OPP_PATH value, the ldd-resolved libcust_opapi.so path, and the test output."
+      - "Resolve the template through the relative skill symlink: WORKFLOW_YAML=$(python3 -c \"import json; print(json.load(open('$WORK_DIR/.workflow/status.json'))['workflow'])\") ; TEMPLATE_DIR=$(dirname \"$(dirname \"$WORKFLOW_YAML\")\")/skills/ascendc-registry-invoke-template ; test -f $TEMPLATE_DIR/SKILL.md && test -d $TEMPLATE_DIR/references/add_example."
+      - "Create a fresh package from the template: rm -rf $WORK_DIR/op && mkdir -p $WORK_DIR/op && cp -a $TEMPLATE_DIR/references/add_example/. $WORK_DIR/op/ && rm -rf $WORK_DIR/op/tests. Keep the template's ACLNN example as the baseline."
+      - "Rename every file under $WORK_DIR/op/ whose name contains add_example to OP_SNAKE, then replace all sample name forms in file contents: add_example->OP_SNAKE, AddExample->OP_PASCAL, ADD_EXAMPLE->OP_UPPER; set the root CMake package_name to OP_PASCAL and update any ACLNN symbol references to aclnn<OP_PASCAL>."
+      - "Build the initialized package with its template build.sh for the lab NPU generation, install the generated .run into $WORK_DIR/dev-package, then run the template's eager example from $WORK_DIR/op/examples/. Point the example at $WORK_DIR/dev-package/vendors/<OP_PASCAL> by exporting ASCEND_CUSTOM_OPP_PATH and placing that vendor's op_api/lib first in LD_LIBRARY_PATH; do not fall back to the system opp vendors directory. Write the example output and environment evidence to $WORK_DIR/op/examples/verify.log."
     acceptance:
-      - "$WORK_DIR/op/ contains the package skeleton: test -d $WORK_DIR/op/op_host && test -d $WORK_DIR/op/op_kernel && test -d $WORK_DIR/op/op_graph && test -d $WORK_DIR/op/tests && test -f $WORK_DIR/op/build.sh && test -f $WORK_DIR/op/CMakeLists.txt && test -f $WORK_DIR/op/README.md."
-      - "No sample-name residue: ! grep -rE 'add_custom|AddCustom|ADD_CUSTOM|scale_custom|ScaleCustom|SCALE_CUSTOM' $WORK_DIR/op/."
+      - "$WORK_DIR/op/ contains the package skeleton: test -d $WORK_DIR/op/op_host && test -d $WORK_DIR/op/op_kernel && test -d $WORK_DIR/op/op_graph && test -f $WORK_DIR/op/build.sh && test -f $WORK_DIR/op/CMakeLists.txt && test -f $WORK_DIR/op/README.md && test ! -e $WORK_DIR/op/tests."
+      - "No sample-name residue: ! grep -RniE 'add_example|AddExample|ADD_EXAMPLE|addExample' $WORK_DIR/op/."
       - "Run package installed into dev-package: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; test -s $WORK_DIR/dev-package/vendors/$OP_PASCAL/op_api/lib/libcust_opapi.so."
-      - "ACLNN test passes: cd $WORK_DIR/op/tests/aclnn && ./run.sh > /tmp/aclnn-run.log 2>&1 && ! grep -qF 'FAILED' /tmp/aclnn-run.log."
-      - "Loaded library resolves under dev-package: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; ldd $WORK_DIR/op/tests/aclnn/build/test_aclnn | grep -F 'libcust_opapi.so' | grep -qF $WORK_DIR/dev-package/vendors/$OP_PASCAL."
-      - "Both aclnn symbols exported from the dev-package library: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; test $(nm -D $WORK_DIR/dev-package/vendors/$OP_PASCAL/op_api/lib/libcust_opapi.so | grep -cE 'aclnn'$OP_PASCAL'(GetWorkspaceSize)?') -eq 2."
-      - "verify.log records $WORK_DIR/dev-package/ as the source of the compile header, the loaded library, and the runtime vendor discovery path: test -s $WORK_DIR/op/tests/aclnn/verify.log && grep -qF 'ASCEND_CUSTOM_OPP_PATH' $WORK_DIR/op/tests/aclnn/verify.log && grep -qF $WORK_DIR/dev-package $WORK_DIR/op/tests/aclnn/verify.log."
+      - "Template example passes: cd $WORK_DIR/op/examples && ./run.sh --eager > verify.log 2>&1 && ! grep -qF 'FAILED' verify.log && grep -qF 'PASS' verify.log."
+      - "The example library resolves from dev-package: OP_PASCAL=$(python3 -c \"import yaml; n=yaml.safe_load(open('$WORK_DIR/spec/spec.yaml'))['op']['name']; print(''.join(w.capitalize() for w in n.split('_')))\") ; ldd $WORK_DIR/op/examples/build-eager/bin/test_aclnn_$OP_PASCAL | grep -F 'libcust_opapi.so' | grep -qF $WORK_DIR/dev-package/vendors/$OP_PASCAL."
+      - "verify.log records the dev-package runtime path: test -s $WORK_DIR/op/examples/verify.log && grep -qF 'ASCEND_CUSTOM_OPP_PATH' $WORK_DIR/op/examples/verify.log && grep -qF $WORK_DIR/dev-package/vendors/$OP_PASCAL $WORK_DIR/op/examples/verify.log."
     out_of_scope:
-      - "Keep the sample's operator semantics unchanged (input count and kernel math change in later tasks)."
-      - "Do not modify $OPERATORS_DIR — the sample stays the shared template."
       - "Only create or modify files under $WORK_DIR/op/ and $WORK_DIR/dev-package/."
+      - "Keep the template's operator semantics unchanged (input count and kernel math change in later tasks)."
     depends_on:
       - generate-spec
     max_retries: 2
