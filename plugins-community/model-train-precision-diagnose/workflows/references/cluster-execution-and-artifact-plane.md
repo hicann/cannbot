@@ -32,6 +32,9 @@ target/golden Preflight 对照、症状专属分析或用户审批。
   信任，并记录逐 Node 非交互连通证据；
 - Agent 是否具备已验证的直接访问能力；否则使用 `handoff`，由用户执行命令并返回证据。
 
+存在已验证的现场启动方式和直接访问能力时，默认使用 `direct`。`handoff` 只用于用户明确要求代执行，或 Agent 的直接执行能力
+不可用、阻塞、未知或在执行前失效；不能仅因作业耗时、多节点或操作复杂而选择 `handoff`。
+
 未知事实写 `unknown`。不得推测 SSH 用户、密钥、节点地址、启动顺序、环境初始化命令或 rendezvous 参数。
 
 ## 3. 共享存储与共享工程门禁
@@ -104,6 +107,10 @@ allocation/Node 范围、attempt、查询证据、日志位置、取消方式和
 
 Primary 在新作业前向用户展示确切命令、节点/Rank、资源、唯一变化因素、共享输出目录、预估容量、回退和停止条件。获批范围不能
 自动扩展到重试、更多节点、更长 Step 或更大 dump；未包含的动作重新审批。
+
+用户批准后，若 `execution_mode=direct` 且 `execution_readiness=ready`，收到授权范围的 Agent 必须使用已验证的现场 launcher 或
+SSH/pssh/run-script 自行提交或拉起该 attempt，并记录原始命令、Job ID 或逐 Node 进程证据；不得把同一命令再次交给用户手动执行。
+启动前发现直接能力失效时停止执行，将 readiness 标为 `blocked/unknown` 并返回证据，不得编造参数或静默切换为 `handoff`。
 
 作业进入终态且所有生产进程停止写入后才能汇总。`succeeded / failed / cancelled / preempted` 分开记录；症状导致的预期失败与
 基础设施失败也分开。只要仍有写入者、Job 状态不明或 Node 回传未齐，`collection_state=pending/unknown`。

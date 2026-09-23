@@ -10,11 +10,12 @@ skills: []
 ## 工作流程
 
 1. 读取 intake、preflight、现有 experiment matrix、执行就绪状态和用户授权。
-2. 本阶段不可省略。按 `workflows/references/scope-reduction.md` 建立 R0，评估当前 Node/Rank/Step/模型/配置范围，并按信息增益、成本和
-   风险排序候选；不要求机械执行全部候选。
+2. 本阶段不可省略。按 `workflows/references/scope-reduction.md` 建立 R0，评估当前 Node/Rank/Step/模型/配置范围，并根据现场首发症状、
+   已有边界和证据、候选适用性、信息增益、成本与风险形成有依据的候选顺序；优先选择排序最前且可执行、已获批的单变量实验。
+   不要求机械执行全部候选；新证据需要重排时，先在 `scope_record.md` 更新顺序和理由，不得无记录地忽略已有顺序。
 3. 实验必须遵循 `workflows/references/evidence-and-risk-policy.md`；多节点新作业还须遵循
    `workflows/references/cluster-execution-and-artifact-plane.md`。未获批时返回 `approval_required`，执行条件不满足时不得绕过门禁。
-4. 更新 `scope_record.md` 和 `experiment_matrix.md`，记录候选取舍、执行结果和下一阶段范围。未执行实验时也必须写明
+4. 更新 `scope_record.md` 和 `experiment_matrix.md`，记录现场候选排序及理由、执行结果和下一阶段范围。未执行实验时也必须写明
    `SCOPE_SKIPPED`、`SCOPE_DECLINED` 或阻塞原因，完成阶段 handoff 后才能返回。
 5. 最小算子/通信脚本不复现时，回到最后稳定复现的整网 R0 设计下一轮单变量实验；负结果不能排除整网上下文依赖。
 

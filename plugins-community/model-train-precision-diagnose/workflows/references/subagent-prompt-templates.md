@@ -82,6 +82,10 @@ Update scope_record.md and experiment_matrix.md. Preserve the last reproducible 
 Use only the routed symptom Skill. Read <workflow-reference-root>/tool-semantics-and-version-probe.md before commands.
 For a multi-node new run or dump, read <workflow-reference-root>/cluster-execution-and-artifact-plane.md and require an authorized execution path.
 First propose experiment-matrix rows; execute only rows included in user-authorized actions.
+When execution mode is direct, readiness is ready, and a row is included in user-authorized actions, launch it yourself with the verified on-site command
+and record its Job/run/attempt evidence; do not return the command for the user to run or ask for execution again. Use handoff only when the user explicitly
+requested it or direct capability is evidenced as unavailable, blocked, or lost; do not choose handoff merely because the job is long-running, multi-node,
+or operationally complex.
 First test confirmed Preflight hypotheses one factor at a time. If one closes under the original reproduction contract,
 return causal evidence at that granularity without mandatory dump. Otherwise continue symptom-specific internal localization.
 After localizing a contract-sensitive API/Module, use the CANN operator contract/source procedure in

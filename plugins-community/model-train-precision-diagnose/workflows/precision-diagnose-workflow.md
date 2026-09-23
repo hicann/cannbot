@@ -78,7 +78,7 @@ Primary 按 Preflight Reference 维护 `preflight_record.md`。先确认 target/
 单节点按需将集群字段标为 `not-applicable`；多节点严格按集群执行 Reference 判定：
 
 - `EXECUTION_READY`：新作业的共享存储、现场启动方式、节点范围、访问和授权条件已满足；
-- `HANDOFF_READY`：条件已确认，由用户执行并回传证据；
+- `HANDOFF_READY`：Agent 缺少已验证的直接执行能力，或用户明确要求代执行；由用户执行并回传证据；
 - `OFFLINE_ONLY`：只读分析既有产物；
 - `EXECUTION_BLOCKED`：关键执行条件缺失或未知。
 
@@ -107,6 +107,10 @@ Primary 必须派发 Scope Reducer。该 Agent 按 Scope Reduction Reference 建
 
 Symptom Agent 先验证 Preflight 的单一差异；若在原复现口径下形成因果闭环，可直接进入 Reviewer。否则调用对应 Skill 执行内部定位。
 所有实验先写入矩阵，需授权的动作由 Primary 确认后再派发。
+
+用户批准确切实验后，若 `execution_mode=direct` 且 `execution_readiness=ready`，Primary 必须把获批命令批次和范围传给 Symptom Agent，
+由该 Agent 使用已验证的现场启动方式自行拉起并记录作业，不得再次要求用户手动执行。只有用户明确要求代执行，或直接执行能力经证据
+确认不可用、阻塞或失效时才使用 `handoff`；不得仅因作业耗时、多节点或操作复杂而退回手动执行。
 
 工具名称、安装状态、框架接入点、结果语义和 CANN 现场契约统一按工具语义 Reference 核对。任何 dump 都必须先通过集群执行 Reference
 和 Dump 联合门禁，才允许 compare、overflow_check 或进入根因证据链；不得从分析结果反推采集时原症状已复现。

@@ -39,6 +39,13 @@ Preflight；材料或检查量较大时，可按 Workflow 临时委派通用 Sub
 迁移。Scope Reducer 必须派发；可以不执行候选实验，但不能省略范围评估和记录。用户拒绝或条件阻塞时仍进入 Reviewer，如实交付证据
 缺口和停止原因。
 
+## 进度清单
+
+运行时提供 Todo List 工具时（OpenCode 为 `todowrite`），Primary 收到范围内请求后必须立即创建并持续维护一份 Todo List，至少覆盖
+Intake、症状路由与 Preflight、Scope Reducer、Symptom Agent、Reviewer 和最终交付。阶段开始、完成、阻塞或按证据回环时同步更新状态；
+只有对应记录和门禁完成后才能把阶段标记为完成。Todo List 只用于展示进度，不替代 Case 记录、落盘证据或用户授权。运行时不支持该工具
+时继续执行相同工作流，不得因此阻塞诊断。
+
 ## 支持的症状路由
 
 | 编号 | 含义 |
