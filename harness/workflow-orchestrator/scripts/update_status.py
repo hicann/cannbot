@@ -23,6 +23,7 @@ python3 update_status.py <task_id> <work_dir> <agent_reply>   （agent_reply = a
 - running   + crash      → fail 且 retries+1（崩溃 = 一次失败，宽松规则的例外）
 - running   + 其他回复   → executed（不校验回复关键词，由 verifier 把关）
 - verifying + pass       → pass（seq+1 记 pass_seq；清 advice 标记）
+- verifying + pass（gated）→ awaiting_approval（等审批；approve→pass / redo→pending / fail→fail+exhausted，由 get_task.py 收割审批文件）
 - verifying + fail       → fail 且 retries+1（是否重试由调度方按 max_retries/on_exhaust 决定）
 - verifying + crash      → fail 且 retries+1（同 verifying + fail）
 - verifying + 其他       → verifying（不动，不写回）
@@ -62,8 +63,12 @@ def classify(reply):
     return "others"
 
 
-def transition(cur, cls):
-    """返回新状态；无规则（终态/非法）返回 None。"""
+def transition(cur, cls, gated=False):
+    """返回新状态；无规则（终态/非法/awaiting_approval）返回 None。
+
+    gated=任务带 require_approval 标记：verifying + pass 先去 awaiting_approval，
+    等待人工审批（approve_task.py 信箱 + get_task.py 收割），而非直接 pass。
+    """
     if cur == "pending":
         return "running"
     if cur == "executed":
@@ -73,7 +78,9 @@ def transition(cur, cls):
     if cur == "verifying":
         if cls == "crash":
             return "fail"
-        return cls if cls in ("pass", "fail") else "verifying"
+        if cls == "pass":
+            return "awaiting_approval" if gated else "pass"
+        return cls if cls == "fail" else "verifying"
     return None
 
 
@@ -111,7 +118,7 @@ def main():
         return fail("未知任务 id: %s" % args.task_id)
     cur = entry.get("status")
     cls = classify(args.reply)
-    new = transition(cur, cls)
+    new = transition(cur, cls, gated=bool(entry.get("require_approval")))
     if new is None:
         return fail("任务 %s 状态 %r 无迁移规则（pass/fail 为终态，非法状态拒绝更新）"
                     % (args.task_id, cur))

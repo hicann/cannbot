@@ -64,7 +64,19 @@ For questions, use the environment's question tool when available; otherwise ask
 
    (Substitute `$SKILL_ROOT` and each `<...>` placeholder verbatim, **keeping the double quotes** — the inner shell parses the substituted command, and an unquoted prompt with spaces or `(` dies as a syntax error before the log redirect runs. Escape `"`, `` ` `` and `$` inside a substituted value.)
 
-   Poll `tmux has-session -t <session>` (the same name chosen above) until it fails (session ended).
+   Then enter the wait loop. Each round (~10s apart) does the following two things until `tmux has-session -t <session>` fails (session ended):
+
+   1. Poll `tmux has-session -t <session>` (as above).
+   2. Poll and approve: run `python3 "$SKILL_ROOT/scripts/poll_workflow.py" --work-dir "<work_dir>"`; its stdout is this round's ready-to-display text.
+      - Relay the output **verbatim** into the session as plain text: no status headers (e.g. `SESSION:RUNNING`), no code fences, no rewording, no JSON conversion. The progress block appears every round; relay it even when identical to the previous round.
+      - Each `◉ 待审批 <task_id>「<title>」` entry in the output is a task awaiting approval: ask the user with the question tool, offering: approve / redo (comment required) / fail (reason optional). Include the entry's task id, title, acceptance list, and review hints (if any) in the question. Do not re-ask an entry that was already asked and is still unanswered. After the user answers, run:
+
+        ```bash
+        python3 "$SKILL_ROOT/scripts/approve_task.py" --work-dir "<work_dir>" --task-id "<task_id>" \
+          --decision <approve|redo|fail> [--comment "<user comment>"] >> "<work_dir>/orchestrator.log" 2>&1
+        ```
+
+        On failure, forward stderr to the user verbatim and continue the loop; when several tasks await approval, ask one by one; when the question tool is unavailable, ask in chat and wait for the reply.
    Done when: the session has ended, and the log (output + exit status) has been relayed to the user verbatim.
 
 ## Blackbox rule

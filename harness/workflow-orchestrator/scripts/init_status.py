@@ -30,8 +30,12 @@ import yaml
 # G.PSL.02：now() 须显式传 tz；统一用 now(timezone.utc).astimezone() 按系统默认时区记录
 
 
-def _persist_initial_status(wf_dir, status_path, args, config, task_ids):
-    """构建并落盘初始状态：status.json + user_prompt.md + log.jsonl（首条 init 事件）。"""
+def _persist_initial_status(wf_dir, status_path, args, config, entries):
+    """构建并落盘初始状态：status.json + user_prompt.md + log.jsonl（首条 init 事件）。
+
+    entries = {任务 id: entry}；entry 恒含 status/retries，gated 任务另含
+    require_approval: true（验证通过后须人工审批才能 pass）。
+    """
     os.makedirs(wf_dir, exist_ok=True)
     status = {
         "workflow": os.path.abspath(args.yaml),
@@ -39,7 +43,7 @@ def _persist_initial_status(wf_dir, status_path, args, config, task_ids):
         "user_prompt": os.path.abspath(os.path.join(wf_dir, "user_prompt.md")),
         "seq": 0,
         "rollbacks_used": 0,
-        "tasks": {tid: {"status": "pending", "retries": 0} for tid in task_ids},
+        "tasks": entries,
     }
     tmp = status_path + ".tmp"  # 原子写：写半截崩溃不会留下半截 status.json
     with open(tmp, "w", encoding="utf-8") as f:
@@ -53,7 +57,7 @@ def _persist_initial_status(wf_dir, status_path, args, config, task_ids):
             "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
             "event": "init",
             "workflow": config.get("workflow", ""),
-            "tasks": len(task_ids),
+            "tasks": len(entries),
         }, ensure_ascii=False) + "\n")
 
 
@@ -81,15 +85,21 @@ def main():
         print("[init_status] 错误: workflow yaml 解析失败: %s" % e, file=sys.stderr)
         return 1
 
-    task_ids = [n["id"] for n in (config.get("nodes") or [])
-                if isinstance(n, dict) and n.get("id") and n.get("task_type") != "subgraph"]
-    if not task_ids:
+    entries = {}
+    for n in (config.get("nodes") or []):
+        if not (isinstance(n, dict) and n.get("id") and n.get("task_type") != "subgraph"):
+            continue
+        e = {"status": "pending", "retries": 0}
+        if n.get("require_approval"):
+            e["require_approval"] = True
+        entries[n["id"]] = e
+    if not entries:
         print("[init_status] 错误: workflow yaml 中没有任务节点(nodes 为空)", file=sys.stderr)
         return 1
 
-    _persist_initial_status(wf_dir, status_path, args, config, task_ids)
+    _persist_initial_status(wf_dir, status_path, args, config, entries)
 
-    print("[init_status] 已初始化 %d 个任务 → %s" % (len(task_ids), status_path))
+    print("[init_status] 已初始化 %d 个任务 → %s" % (len(entries), status_path))
     return 0
 
 

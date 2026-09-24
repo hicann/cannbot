@@ -34,7 +34,8 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
   等在飞全部收尾并回收后重新裁决，杜绝孤儿 agent 进程。
 - get_task 输出映射：batch → 派发；[ALL TASK FINISHED] 无 skipped → exit 0；
   带 skipped（耗尽+continue 的跳过任务清单）→ 报告跳过清单，exit 1；[STUCK] → exit 1；
-  [] → 有在飞则等待，无在飞则原地重置瞬态再试，连续 3 轮仍空 → exit 2。
+  [] → 有在飞则等待；无在飞但有待审批任务则按固定间隔轮询（不计空轮、不退出，
+  等人工审批到达）；其余无在飞则原地重置瞬态再试，连续 3 轮仍空 → exit 2。
 - 单实例互斥：.workflow/orchestrator.lock（pid + 存活探测，陈旧锁自动接管）。
   所有 status.json 写入均为临时文件 + rename 原子替换，写半截崩溃不损坏旧文件。
 
@@ -67,6 +68,7 @@ CRASH = "$CRASH"
 SLEEP_PREFIX = "$SLEEP:"
 VERDICT_PREFIX = "$VERDICT:"
 MAX_EMPTY_ROUNDS = 3
+APPROVAL_POLL_SECONDS = 1  # 待审批轮询间隔：审批经文件信箱异步到达，固定间隔避免热自旋
 TERMINAL_RESULTS = ("[ALL TASK FINISHED]", "[STUCK]")  # get_task 终结裁决的合法 result
 
 
@@ -490,6 +492,15 @@ def dispatch_batch(ctx, batch):
     return None
 
 
+def has_awaiting_approval(work_dir):
+    """status.json 中存在待审批任务；缺失/损坏/结构异常一律 False（落回空轮计数，不改现有行为）。"""
+    try:
+        tasks = load_status(work_dir)["tasks"]
+        return any(t.get("status") == "awaiting_approval" for t in tasks.values())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def loop_step(ctx):
     """单轮调度：收割 → 问 get_task → 派发/自愈 → 等待任一完成。
 
@@ -516,6 +527,11 @@ def loop_step(ctx):
         if exit_code is not None:
             return exit_code
     elif not ctx.inflight:
+        if has_awaiting_approval(ctx.work_dir):
+            # 待审批不算空轮：按固定间隔轮询等人工审批到达，不进自愈/退出计数
+            ctx.empty_rounds = 0
+            time.sleep(APPROVAL_POLL_SECONDS)
+            return None
         # 空轮自愈（仅无在飞时）：任务滞留瞬态 → 重置再试，直接进下一轮不等待
         ctx.empty_rounds += 1
         if ctx.empty_rounds > MAX_EMPTY_ROUNDS:

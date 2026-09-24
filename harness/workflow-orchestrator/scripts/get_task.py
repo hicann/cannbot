@@ -12,7 +12,8 @@
 python3 get_task.py <work_dir>          （唯一输入）
 
 按 $WORK_DIR/.workflow/status.json 的 workflow 字段定位 yaml，对照契约全量校验
-（顶层 workflow/max_parallel/nodes + 可选 max_rollbacks（缺省 1）/system_prompt；normal 12 键 + 可选 rollback_to/procedure / subgraph 4 键；
+（顶层 workflow/max_parallel/nodes + 可选 max_rollbacks（缺省 1）/system_prompt；
+normal 12 键 + 可选 rollback_to/procedure/require_approval / subgraph 4 键；
 depends_on 引用存在且无环），物化子图，再选取派发批次：
 
 - pending（依赖全 pass）→ agent=executor（execute 阶段）
@@ -22,6 +23,12 @@ depends_on 引用存在且无环），物化子图，再选取派发批次：
   子任务全 pass → subgraph 聚合为 pass，解锁下游。不支持嵌套 subgraph。
   subgraph 容器本身不注册状态（分组不是任务，状态由 eff() 实时聚合，不占 max_parallel）。
 - 批次 ≤ max_parallel − 在飞（running/verifying）数
+- 人工审批：节点配 require_approval（true 或确认提示列表）时，verifying 通过不直接落
+  pass，而由 update_status
+  进入 awaiting_approval；approve_task.py 写 .workflow/approvals/<百分号编码 tid>.json，
+  本脚本每轮收割：approve → pass（记 pass_seq）；redo → pending（retries 清零，
+  comment 作为 Human-Feedback 注入下轮 execute 提示词）；fail → 终裁（fail+exhausted，
+  走 on_exhaust）。残留/非法文件删除并记 approval_ignored，损坏 JSON 改名 .bad 留存
 - 重试策略：fail 且 retries ≤ max_retries → 写回 pending 自动重试（含子图子任务）；
   超预算 → 打 exhausted 标记，按 on_exhaust 分流：exit → [STUCK]（短路，本轮不派发
   任何任务）；continue → 耗尽节点及其全部（传递）下游构成跳过任务集合（含子图容器
@@ -36,6 +43,7 @@ stdout（唯一输出）：
 - 全部 pass/skipped → {"result": "[ALL TASK FINISHED]",
   "skipped": [...]}（skipped 仅存在跳过任务时出现，为全量清单）      exit 0
 - 有在飞 → []                                                       exit 0
+- 有待审批任务（无批次且无在飞）→ []（同有在飞，继续轮询）            exit 0
 - 其余（依赖不满足 / fail 未决）→ {"result": "[STUCK]", "reason": …} exit 1
 校验/读写失败 → stderr 报错并 exit 2。
 """
@@ -45,6 +53,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 import yaml
 
@@ -56,11 +65,11 @@ OPTIONAL_TOP_KEYS = ("max_rollbacks", "system_prompt")  # 顶层可选键
 TASK_TYPES = ("normal", "subgraph")
 NORMAL_KEYS = ("id", "task_type", "title", "goal", "approach", "acceptance",
                "out_of_scope", "depends_on", "executor", "verifier", "max_retries", "on_exhaust")
-OPTIONAL_NORMAL_KEYS = ("rollback_to", "procedure")
+OPTIONAL_NORMAL_KEYS = ("rollback_to", "procedure", "require_approval")  # 普通节点可选键
 SUBGRAPH_KEYS = ("id", "task_type", "file", "depends_on")
 STR_KEYS = ("id", "title", "executor", "verifier")  # 非空 str
 LIST_KEYS = ("goal", "approach", "acceptance", "out_of_scope")  # 非空 list[非空 str]
-STATUSES = ("pending", "running", "executed", "verifying", "pass", "fail")
+STATUSES = ("pending", "running", "executed", "verifying", "awaiting_approval", "pass", "fail")
 SETTLED = ("pass",)
 IN_FLIGHT = ("running", "verifying")
 
@@ -109,6 +118,13 @@ def _validate_node_structure(nodes, allow_subgraph):
                 return None, "%s.max_retries 必须是 >= 0 的 int" % where
             if node["on_exhaust"] not in ("continue", "exit", "rollback"):
                 return None, "%s.on_exhaust 必须是 continue/exit/rollback 之一" % where
+            if "require_approval" in node:
+                ra = node["require_approval"]
+                ok = isinstance(ra, bool) or (
+                    isinstance(ra, list) and ra and all(is_str(s) for s in ra))
+                if not ok:
+                    return None, ("%s.require_approval 必须是 bool 或"
+                                  "非空 list[非空 str]（确认提示）" % where)
         d = node["depends_on"]
         if not isinstance(d, list) or not all(is_str(s) for s in d):
             return None, "%s.depends_on 必须是 list[str]（无依赖用 []）" % where
@@ -374,6 +390,102 @@ def _save_status(status_path, status):
     os.replace(tmp, status_path)
 
 
+def _read_approval(fpath, fname):
+    """读取审批信箱；损坏文件改名留存，返回读取是否成功及内容。"""
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        try:
+            os.replace(fpath, fpath + ".bad")  # 改名留存，避免每轮重复告警
+        except OSError:
+            pass  # listdir 后文件被人工挪走：警告照打，下轮不再见到
+        print("[get_task] 审批文件损坏，已改名 %s.bad: %s" % (fname, e), file=sys.stderr)
+        return False, None
+    return True, data
+
+
+@dataclass
+class ApprovalDecision:
+    """已校验的审批决定及其状态上下文。"""
+    status: dict
+    task_id: str
+    decision: str
+    comment: str
+    node_by_id: dict
+    subs: dict
+
+
+def _apply_approval(ctx):
+    """应用已校验的审批决定，保留现有状态迁移及重试预算语义。"""
+    entry = ctx.status["tasks"][ctx.task_id]
+    if ctx.decision == "approve":
+        entry["status"] = "pass"
+        ctx.status["seq"] = int(ctx.status.get("seq", 0)) + 1
+        entry["pass_seq"] = ctx.status["seq"]
+        for k in ("advice", "feedback"):
+            entry.pop(k, None)
+    elif ctx.decision == "redo":
+        entry["status"] = "pending"
+        entry["retries"] = 0
+        entry["feedback"] = ctx.comment
+    else:  # fail：终裁，耗尽预算走 on_exhaust（调大 max_retries 仍可复活）
+        node = _node_of(ctx.task_id, ctx.node_by_id, ctx.subs)
+        entry["status"] = "fail"
+        entry["retries"] = (int(node["max_retries"]) + 1) if node \
+            else (int(entry.get("retries", 0)) + 1)
+        entry["exhausted"] = True
+
+
+def harvest_approvals(status, node_by_id, subs):
+    """收割 .workflow/approvals/*.json（approve_task.py 写入的文件信箱）。
+
+    approve → pass（seq+1 记 pass_seq，清 advice/feedback）；
+    redo → pending（retries 清零，comment 存 feedback，注入下一轮 execute 提示词）；
+    fail → 终裁：fail + exhausted + retries=max_retries+1，交由现有重试策略走 on_exhaust。
+    残留（任务不在 awaiting_approval 或 decision 非法）→ 删文件记 approval_ignored；
+    JSON 损坏 → 改名 .bad 留存。返回是否有变更（调用方统一写回 status）。
+    """
+    work_dir = status["work_dir"]
+    ap_dir = os.path.join(work_dir, ".workflow", "approvals")
+    if not os.path.isdir(ap_dir):
+        return False
+    changed = False
+    for fname in sorted(os.listdir(ap_dir)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(ap_dir, fname)
+        valid, data = _read_approval(fpath, fname)
+        if not valid:
+            continue
+        tid = unquote(fname[:-len(".json")])
+        decision = data.get("decision") if isinstance(data, dict) else None
+        raw_comment = data.get("comment") if isinstance(data, dict) else None
+        comment = raw_comment.strip() if isinstance(raw_comment, str) else ""
+        entry = status["tasks"].get(tid)
+        awaiting = isinstance(entry, dict) and entry.get("status") == "awaiting_approval"
+        valid_decision = decision in ("approve", "redo", "fail")
+        missing_comment = decision == "redo" and not comment
+        if not awaiting or not valid_decision or missing_comment:
+            try:
+                os.remove(fpath)
+            except OSError:
+                pass  # 与 .bad 改名容错对齐：收割瞬间文件被人工删走，忽略事件照记
+            orch.log_event(work_dir, event="approval_ignored", task_id=tid,
+                           reason="任务不在 awaiting_approval 或 decision 非法")
+            continue
+        _apply_approval(ApprovalDecision(status, tid, decision, comment,
+                                         node_by_id, subs))
+        try:
+            os.remove(fpath)
+        except OSError:
+            pass  # 同上：成功收割后文件被人工删走的极端窗口，状态已落账不受影响
+        orch.log_event(work_dir, event="approval", task_id=tid, decision=decision,
+                       comment=comment or None)
+        changed = True
+    return changed
+
+
 @dataclass
 class RollbackPlan:
     """一次回滚的标识与产物路径：从 exhausted_task 回滚到 rollback_target 重做。"""
@@ -492,7 +604,7 @@ def execute_rollback(work_dir, status, status_path, graph, tasks):
             continue
         entry["status"] = "pending"
         entry["retries"] = 0
-        for k in ("exhausted", "pass_seq", "advice"):
+        for k in ("exhausted", "pass_seq", "advice", "feedback"):
             entry.pop(k, None)
     os.makedirs(os.path.dirname(advice_abs), exist_ok=True)
     status["advice_pending"] = dict(advice_entry, **{
@@ -508,10 +620,11 @@ def execute_rollback(work_dir, status, status_path, graph, tasks):
 
 @dataclass
 class PromptContext:
-    """提示词可选上下文：回滚建议、全局指令与完整任务标识。"""
+    """提示词可选上下文：回滚建议、人工重做意见、全局指令与完整任务标识。"""
 
     advice: str = None
     failure_reason: str = None
+    feedback: str = None
     system_prompt: str = None
     task_id: str = None
 
@@ -557,6 +670,8 @@ def build_prompt(node, phase, work_dir, user_prompt, context=None):
             with open(advice, encoding="utf-8") as f:
                 advice_content = f.read()
             parts.append("Rollback-Advice: %s\n%s" % (advice, advice_content))
+        if context.feedback:
+            parts.append(block("Human-Feedback", [context.feedback]))
     elif phase == "verify" and "procedure" in node:
         parts.append(block("Procedure", node["procedure"]))
     parts += [block("Acceptance", node["acceptance"]), block("Out-of-Scope", node["out_of_scope"])]
@@ -622,6 +737,21 @@ def _apply_retry_strategy(tasks, node_by_id, subs, status, max_rollbacks):
                 exhausted_exit.append(stuck)
         # else continue：交由跳过任务集合处理（这里只标记 exhausted）
     return changed, exhausted_exit
+
+
+def _register_subtasks(tasks, parent_id, children):
+    """注册尚未物化的子任务，并继承人工审批标记。"""
+    changed = False
+    for child in children:
+        kid = "%s/%s" % (parent_id, child["id"])
+        if kid in tasks:
+            continue
+        entry = {"status": "pending", "retries": 0}
+        if child.get("require_approval"):
+            entry["require_approval"] = True
+        tasks[kid] = entry
+        changed = True
+    return changed
 
 
 def main():
@@ -711,11 +841,8 @@ def main():
         if err:
             return fail("subgraph %s 校验失败(%s): %s" % (tid, fpath, err))
         subs[tid] = sub
-        for child in sub:
-            kid = "%s/%s" % (tid, child["id"])
-            if kid not in tasks:
-                tasks[kid] = {"status": "pending", "retries": 0}
-                changed = True
+        if _register_subtasks(tasks, tid, sub):
+            changed = True
     # Keep targets discovered during an earlier materialization pass: after a
     # rollback, a subgraph can be pending again and therefore not materialized
     # in this pass, but its child checkpoints must remain addressable.
@@ -724,6 +851,9 @@ def main():
     checkpoint_targets = sorted(checkpoint_target_set)
     if status.get("checkpoint_targets") != checkpoint_targets:
         status["checkpoint_targets"] = checkpoint_targets
+        changed = True
+    # 人工审批收割：物化之后（subs 可用）、重试策略之前（终裁 fail 当轮走 on_exhaust）
+    if harvest_approvals(status, node_by_id, subs):
         changed = True
     # 重试策略：预算内 fail → pending 重试；超预算 → exhausted 标记 + on_exhaust 分流
     retry_changed, exhausted_exit = _apply_retry_strategy(
@@ -783,6 +913,7 @@ def main():
             "prompt": build_prompt(node, phase, work_dir, up_path, PromptContext(
                 advice=tasks[tid].get("advice"),
                 failure_reason=read_verdict_failure_reason(work_dir, tid),
+                feedback=tasks[tid].get("feedback"),
                 system_prompt=config.get("system_prompt"), task_id=tid)),
         })
         if phase == "execute":
@@ -805,6 +936,9 @@ def main():
         return 0
     if any(s in IN_FLIGHT for s in effs.values()):
         print("[]")
+        return 0
+    if any(t.get("status") == "awaiting_approval" for t in tasks.values()):
+        print("[]")  # 等待人工审批：对编排器表现为「有在飞」，继续轮询
         return 0
     reasons = []
     for tid, node in node_by_id.items():

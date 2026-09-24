@@ -1,6 +1,7 @@
 # Workflow definition template. Every key is mandatory and explicit, except
-# max_rollbacks (optional, default 1), system_prompt (optional), procedure (optional) and rollback_to
-# (required iff on_exhaust: rollback); unknown keys are a validation error.
+# max_rollbacks (optional, default 1), system_prompt (optional), procedure (optional), rollback_to
+# (required iff on_exhaust: rollback) and require_approval (optional, default false;
+# bool or hint list); unknown keys are a validation error.
 
 workflow: basic-demo                    # str. Name; recorded in the .workflow/log.jsonl init event.
 
@@ -76,6 +77,13 @@ nodes:                                  # Task nodes. depends_on edges drive exe
     verifier: general-verifier
     max_retries: 1
     on_exhaust: exit
+    # require_approval: true            # bool | non-empty list[str], optional (default false). Gate after the verifier passes:
+                                        # the task waits in awaiting_approval for a human decision: approve (unblock downstream) /
+                                        # redo (back to pending, your comment injected as Human-Feedback) / fail (terminal, follows on_exhaust).
+                                        # true = bare gate; a list of strings = gate plus review checkpoints shown to the approver, e.g.:
+    # require_approval:
+    #   - Confirm report.md covers every acceptance item
+    #   - Spot-check one e2e case conclusion against its log
 
   - id: gen-report-subgraph            # Normal node that produces the subgraph file consumed by the next node.
     task_type: normal

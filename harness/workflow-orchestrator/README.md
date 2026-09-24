@@ -101,6 +101,7 @@ nodes:
 - `max_retries`：验证失败后的重试次数，必须大于等于 0。
 - `on_exhaust`：重试耗尽后的处理方式：`exit`、`continue` 或 `rollback`。
 - `rollback_to`：仅当 `on_exhaust: rollback` 时填写，指向同一节点集合中的传递上游普通任务。
+- `require_approval`：可选，bool 或非空 list[str]（确认提示），缺省不审批。配置后该任务验证通过进入待审批（`awaiting_approval`），由人工决定批准（解锁下游）/ 驳回重做（意见注入下一轮执行提示词）/ 终裁终止（走 `on_exhaust`）。`true` 为裸门禁；list[str] 形式在门禁之上附带审批检查点，任务进入待审批时展示给审批人（决定前该核对什么），提示实时从 yaml 读取，运行中修改立即生效。门禁标记在 init/子图物化时快照进 status.json，运行中修改 yaml 的门禁配置对已初始化任务不生效。
 
 ### 子图任务字段
 
