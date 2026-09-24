@@ -1,0 +1,1 @@
+[INFO] Available bin for op SoftmaxV2 is /home/developer/Ascend/cann-9.1.0/opp/vendors/SoftmaxV2/op_impl/ai_core/tbe/kernel/ascend950/softmax_v2/SoftmaxV2_bcd123.o

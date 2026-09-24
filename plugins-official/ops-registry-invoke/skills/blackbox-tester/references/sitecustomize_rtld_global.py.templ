@@ -1,0 +1,42 @@
+"""
+sitecustomize.py.templ — TTK aclnn e2e 黑盒：RTLD_GLOBAL 预加载 vendor tiling .so
+
+场景：CANN `NnopbaseLoadTilingSo` 以 RTLD_LOCAL dlopen vendor tiling `.so`，`OpImplRegisterV2`
+（TilingFunc 注册器）对 libnnopbase 不可见 → `NnopbaseExecutorDoTiling` 找不到 → errno 561002
+（详见 ttk-aclnn-guide.md Pitfall 10）。
+
+用法：
+1. 复制为 `docs/{OP}/develop/sitecustomize.py`，`{VENDOR_NAME}` 替换为 PascalCase 算子名。
+2. sitecustomize.py 是 Python 启动钩子——`PYTHONPATH` 可搜索到即自动 import（source env.sh 后
+   跑 `python3 -m ttk` 即生效），无需显式调用。
+3. 部署后跑黑盒单例试跑（SKILL 步骤 2.6）确认 561002 消除。
+
+已知前提
+- 仅对走 GE 初始化路径的 TTK aclnn e2e 生效；C++ ST / 最小 Python 直调不经此路径，正常。
+- 若同时命中 `errcode95/NO_OUTPUT`（Pitfall 9：vendor optiling 未加载致垃圾 TilingData），
+  需再配合 `LD_PRELOAD` + `TbeLoadSoAndSaveToRegistry` 注册 vendor `liboptiling.so`。
+"""
+import ctypes
+import glob
+import os
+
+def _find_vendor_tiling_so():
+    """按 CANN vendor 惯例定位 vendor tiling .so，跨 linux 架构自适应（x86_64/aarch64…），
+    而非写死单架构——Ascend 950 常部署 aarch64，写死 x86_64 会在真机找不到。"""
+    _opp = os.environ.get("ASCEND_OPP_PATH", "/usr/local/Ascend/opp")
+    pattern = os.path.join(
+        _opp, "vendors", "{VENDOR_NAME}", "op_impl", "ai_core", "tbe",
+        "op_tiling", "lib", "linux", "*", "libcust_opmaster_rt2.0.so")
+    paths = glob.glob(pattern)
+    return paths[0] if paths else None
+
+_VENDOR_SO = _find_vendor_tiling_so()
+
+# Linux RTLD_GLOBAL：符号进入全局符号表，对之后加载的库（含 libnnopbase.so）可见。
+_RTLD_GLOBAL = 0x00100
+
+if _VENDOR_SO and os.path.isfile(_VENDOR_SO):
+    try:
+        ctypes.CDLL(_VENDOR_SO, mode=_RTLD_GLOBAL)
+    except OSError:
+        pass
