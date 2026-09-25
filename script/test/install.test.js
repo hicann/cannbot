@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { pluginSourceDefinition } from "../lib/plugin-bundle.js";
+import { assemblePlugins, pluginSourceDefinition } from "../lib/plugin-bundle.js";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "..");
@@ -57,7 +57,7 @@ function skillRoot(target, tool) {
     : join(configRoot(target, tool), "skills");
 }
 
-function assertSkillInstallation(installedSkill, source, plugin, skill) {
+function assertSkillInstallation(installedSkill, source, plugin, skill, pluginRoot = "plugins") {
   const shouldLink = source === "repository";
   assert.equal(lstatSync(installedSkill).isSymbolicLink(), shouldLink);
   if (!shouldLink) return;
@@ -200,6 +200,18 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
   }
   assert.deepEqual(officialPlugins.map((plugin) => plugin.name).sort(), expectedPlugins);
   assert.equal(entries.has("model-train-precision-diagnose"), false);
+  // A community plugin is indexed by its manifest name, so its directory name may differ;
+  // the manifest at the declared source path is what has to agree with the entry.
+  for (const plugin of marketplace.plugins.filter(
+    (entry) => typeof entry.source === "string" && entry.source.startsWith("./plugins-community/"),
+  )) {
+    const manifest = JSON.parse(readFileSync(
+      join(repositoryRoot, plugin.source, ".claude-plugin", "plugin.json"),
+      "utf8",
+    ));
+    assert.equal(manifest.name, plugin.name);
+    assert.equal(plugin.version, manifest.version);
+  }
   assert.equal(marketplace.owner.url, "https://gitcode.com/cann/cannbot");
   for (const plugin of officialPlugins) {
     assert.equal(plugin.source, `./plugins-official/${plugin.name}`);
@@ -706,4 +718,219 @@ test("declarative dependencies use the same project-level install flow", () => {
   assert.equal(isAbsolute(readlinkSync(join(target, "fixture-dependency"))), false);
   const record = readPluginRecord(target, "dsh", plugin);
   assert.deepEqual(record.dependencies, [join(".cannbot", "dependencies", plugin, "fixture-dependency")]);
+});
+
+// The community channel is exercised against fixtures built inside the sandbox rather
+// than tracked fixture directories, following the dependency test above: nothing here is
+// subject to CodeCheck, OAT, or the package `files` field.
+function writeSkill(root, name, { policy = null, script = null } = {}) {
+  mkdirSync(root, { recursive: true });
+  const frontmatter = ["---", `name: ${name}`, `description: Fixture skill ${name}`];
+  if (policy !== null) frontmatter.push(`disable-model-invocation: ${policy}`);
+  frontmatter.push("---", "");
+  writeFileSync(join(root, "SKILL.md"), frontmatter.join("\n"));
+  if (script) {
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    writeFileSync(join(root, "scripts", script), "#!/bin/bash\nexit 0\n");
+  }
+}
+
+function createCommunityBundle(sandbox, bundleName, plugins, sharedSkills = []) {
+  const bundleRoot = join(sandbox, bundleName);
+  const skillsRepository = join(bundleRoot, "skills-repository");
+  mkdirSync(join(skillsRepository, ".git"), { recursive: true });
+  writeFileSync(join(skillsRepository, "LICENSE"), "fixture skills license\n");
+  mkdirSync(join(bundleRoot, "plugins-community"), { recursive: true });
+  // assemblePlugins stamps the repository licence onto official plugins, so it must exist
+  // even in a bundle that only carries community ones.
+  mkdirSync(join(bundleRoot, "plugins-official"), { recursive: true });
+  writeFileSync(join(bundleRoot, "plugins-official", "LICENSE"), "fixture plugin license\n");
+  for (const skill of sharedSkills) writeSkill(join(skillsRepository, skill), skill);
+
+  const created = [];
+  for (const plugin of plugins) {
+    const pluginRoot = join(bundleRoot, "plugins-community", plugin.directoryName);
+    mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(pluginRoot, "agents"), { recursive: true });
+    writeFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: plugin.name,
+      version: "0.2.0",
+      description: `Community fixture ${plugin.name}`,
+      agents: ["./agents/fixture-agent.md"],
+    }));
+    writeFileSync(join(pluginRoot, "plugin-sources.json"), JSON.stringify({
+      skillsRepository: "skills-repository",
+      skillInstallMode: "symlink",
+      skills: plugin.skills ?? [],
+      preserveSkillInvocationPolicy: plugin.preserveSkillInvocationPolicy ?? true,
+    }));
+
+    const localSkills = plugin.localSkills ?? [];
+    for (const [index, name] of localSkills.entries()) {
+      // The first local Skill declares a policy and the second omits the key, so one
+      // fixture covers both states of the invocation-policy switch.
+      writeSkill(join(pluginRoot, "skills", name), name, {
+        policy: index === 0 ? "true" : null,
+        script: index === 0 ? "check.sh" : null,
+      });
+    }
+
+    const referenced = localSkills[0] ?? (plugin.skills ?? [])[0];
+    writeFileSync(join(pluginRoot, "agents", "fixture-agent.md"), [
+      "---",
+      "name: fixture-agent",
+      "description: Fixture agent",
+      "---",
+      "",
+      "Run the gate:",
+      "",
+      "```bash",
+      `bash skills/${referenced}/scripts/check.sh --target a2`,
+      "```",
+      "",
+      "Place new material in the skills/ directory of the plugin.",
+      "",
+    ].join("\n"));
+    created.push({ ...plugin, pluginRoot, localSkills });
+  }
+  return { bundleRoot, skillsRepository, plugins: created };
+}
+
+function installFromBundle(bundleRoot, pluginName, tool, sandbox, target) {
+  const projectTarget = target ?? join(sandbox, `project-${tool}-${pluginName}`);
+  mkdirSync(projectTarget, { recursive: true });
+  const result = spawnSync(process.execPath, [
+    cli, "install", pluginName, "--tool", tool, "--target", projectTarget, "--source", bundleRoot,
+  ], {
+    cwd: projectTarget,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: join(sandbox, "home"),
+      XDG_CACHE_HOME: join(sandbox, "cache"),
+      CANNBOT_SKIP_CODEX_PLUGIN_ADD: "1",
+      CANNBOT_SKIP_OPENCODE_PLUGIN_ADD: "1",
+    },
+  });
+  return { target: projectTarget, result };
+}
+
+const communityFixturePlugin = {
+  name: "fixture-community",
+  directoryName: "collaborative-fixture-long-directory-name",
+  localSkills: ["fixture-policy-skill", "fixture-plain-skill"],
+};
+
+test("a community plugin installs under a directory name that differs from its manifest name", () => {
+  const sandbox = createSandbox("cannbot-community-");
+  const bundle = createCommunityBundle(sandbox, "bundle", [communityFixturePlugin]);
+  assert.notEqual(communityFixturePlugin.directoryName, communityFixturePlugin.name);
+
+  for (const tool of tools) {
+    const { target, result } = installFromBundle(bundle.bundleRoot, communityFixturePlugin.name, tool, sandbox);
+    assert.equal(result.status, 0, `${tool}: ${result.stderr || result.stdout}`);
+    for (const skill of communityFixturePlugin.localSkills) {
+      assert.equal(existsSync(join(skillRoot(target, tool), skill)), true, `${tool}: ${skill} missing`);
+    }
+    assert.equal(readPluginRecord(target, tool, communityFixturePlugin.name).plugin, communityFixturePlugin.name);
+  }
+});
+
+test("installing a community plugin twice is idempotent", () => {
+  const sandbox = createSandbox("cannbot-community-repeat-");
+  const bundle = createCommunityBundle(sandbox, "bundle", [communityFixturePlugin]);
+  const first = installFromBundle(bundle.bundleRoot, communityFixturePlugin.name, "claude", sandbox);
+  assert.equal(first.result.status, 0, first.result.stderr || first.result.stdout);
+  const registryPath = join(configRoot(first.target, "claude"), "cannbot-plugin.json");
+  const before = readFileSync(registryPath, "utf8");
+
+  const again = installFromBundle(
+    bundle.bundleRoot, communityFixturePlugin.name, "claude", sandbox, first.target,
+  );
+  assert.equal(again.result.status, 0, again.result.stderr || again.result.stdout);
+  assert.equal(readFileSync(registryPath, "utf8"), before);
+});
+
+test("agent bodies resolve Skill script paths after installation, and prose is left alone", () => {
+  const sandbox = createSandbox("cannbot-agent-paths-");
+  const bundle = createCommunityBundle(sandbox, "bundle", [communityFixturePlugin]);
+  const referenced = communityFixturePlugin.localSkills[0];
+
+  for (const tool of tools) {
+    const { target, result } = installFromBundle(bundle.bundleRoot, communityFixturePlugin.name, tool, sandbox);
+    assert.equal(result.status, 0, `${tool}: ${result.stderr || result.stdout}`);
+    const agentPath = join(
+      configRoot(target, tool), "agents", tool === "codex" ? "fixture-agent.toml" : "fixture-agent.md",
+    );
+    const body = readFileSync(agentPath, "utf8");
+    const installedScript = join(skillRoot(target, tool), referenced, "scripts", "check.sh");
+
+    assert.equal(existsSync(installedScript), true, `${tool}: installed script is missing`);
+    assert.equal(
+      body.includes(tool === "codex" ? JSON.stringify(installedScript).slice(1, -1) : installedScript),
+      true,
+      `${tool}: the executable path was not rewritten to the installed location`,
+    );
+    assert.doesNotMatch(body, new RegExp(`bash skills/${referenced}/`));
+    // This sentence names the plugin's own skills/ directory, not a Skill, and stands.
+    assert.match(body, /Place new material in the skills\/ directory of the plugin\./);
+  }
+});
+
+test("a plugin may keep the invocation policy its Skills were authored with", () => {
+  const sandbox = createSandbox("cannbot-invocation-policy-");
+  const preserved = createCommunityBundle(sandbox, "bundle-preserve", [{
+    ...communityFixturePlugin, preserveSkillInvocationPolicy: true,
+  }]);
+  const rewritten = createCommunityBundle(sandbox, "bundle-rewrite", [{
+    ...communityFixturePlugin,
+    name: "fixture-community-rewrite",
+    directoryName: "community-rewrite-directory",
+    preserveSkillInvocationPolicy: false,
+  }]);
+
+  const readBuiltSkill = (bundle, plugin, skill) => {
+    const outputRoot = join(bundle.bundleRoot, "dist");
+    assemblePlugins(bundle.bundleRoot, outputRoot);
+    return readFileSync(
+      join(outputRoot, "plugins", plugin.directoryName, "skills", skill, "SKILL.md"),
+      "utf8",
+    );
+  };
+
+  const [policySkill, plainSkill] = communityFixturePlugin.localSkills;
+  assert.match(
+    readBuiltSkill(preserved, preserved.plugins[0], policySkill),
+    /^disable-model-invocation: true$/m,
+  );
+  assert.match(
+    readBuiltSkill(rewritten, rewritten.plugins[0], policySkill),
+    /^disable-model-invocation: false$/m,
+  );
+  // The Skill that never declared the key has no key in either mode.
+  for (const [bundle, plugin] of [[preserved, preserved.plugins[0]], [rewritten, rewritten.plugins[0]]]) {
+    assert.doesNotMatch(readBuiltSkill(bundle, plugin, plainSkill), /disable-model-invocation/);
+  }
+});
+
+test("symlinks inside a community plugin resolve within that plugin", () => {
+  const marketplace = JSON.parse(readFileSync(join(repositoryRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+  // plugins/ forbids tracked symlinks outright (see the 120000 assertion above). A
+  // community plugin may carry them, so the replacement assertion is containment.
+  for (const plugin of marketplace.plugins.filter(
+    (candidate) => typeof candidate.source === "string" && candidate.source.startsWith("./plugins-community/"),
+  )) {
+    const pluginDir = realpathSync(join(repositoryRoot, plugin.source));
+    const tracked = spawnSync("git", ["ls-files", "-s", plugin.source.replace(/^\.\//, "")], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    assert.equal(tracked.status, 0, tracked.stderr);
+    for (const line of tracked.stdout.split("\n")) {
+      if (!line.startsWith("120000 ")) continue;
+      const path = join(repositoryRoot, line.split("\t").at(-1));
+      const resolved = realpathSync(path);
+      assert.equal(resolved.startsWith(pluginDir), true, `${path} resolves outside its plugin: ${resolved}`);
+    }
+  }
 });

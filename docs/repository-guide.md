@@ -57,6 +57,7 @@ cannbot/
 │       ├── plugin-install.json      # 外部依赖声明
 │       └── init.sh                  # 源码安装入口
 ├── plugins-community/               # 社区插件
+│   └── <directory>/                 # 目录名仅为存放位置，插件按清单 name 建索引
 ├── script/                          # npm 工程与统一安装器
 │   ├── bin/
 │   ├── lib/

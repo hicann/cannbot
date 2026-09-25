@@ -10,5 +10,5 @@ const outputRoot = resolve(process.argv[2] ?? new URL("../dist", import.meta.url
 rmSync(outputRoot, { recursive: true, force: true });
 const assembled = assemblePlugins(repositoryRoot, outputRoot);
 for (const plugin of assembled) {
-  console.error(`assembled ${plugin.pluginId}: ${plugin.skills} Skills`);
+  console.error(`assembled ${plugin.parent}/${plugin.pluginId}: ${plugin.skills} Skills`);
 }

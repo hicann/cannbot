@@ -1,0 +1,20 @@
+{
+  "name": "cake",
+  "version": "0.2.0",
+  "description": "CAKE2 - Collaborative Ascend Kernel Evolution. AI-powered AscendC operator generation for Ascend NPU.",
+  "author": { "name": "CANNBot" },
+  "homepage": "https://gitcode.com/cann/cannbot",
+  "repository": "https://gitcode.com/cann/cannbot",
+  "license": "CANN-2.0",
+  "keywords": ["cannbot", "ascend-c", "operator-generation", "kernel-evolution"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CAKE 算子生成",
+    "shortDescription": "AscendC 算子的进化式生成与评测",
+    "longDescription": "从算子描述出发，经契约生成、参考实现、DSL 基线、AscendC 代码生成、编译与精度评测，并支持按 profiling 结果迭代优化内核性能。",
+    "developerName": "CANNBot",
+    "category": "Productivity",
+    "capabilities": ["Skills"],
+    "defaultPrompt": ["使用 cake 为当前算子描述生成 AscendC 实现并完成评测。"]
+  }
+}

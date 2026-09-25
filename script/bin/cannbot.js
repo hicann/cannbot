@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { pluginSourceDefinition } from "../lib/plugin-bundle.js";
+import { findPluginDirectory, pluginSourceDefinition } from "../lib/plugin-bundle.js";
 
 const installerPackage = readJson(new URL("../package.json", import.meta.url));
 const OPENCODE_PLUGIN_SPEC = `${installerPackage.name}@${installerPackage.version}`;
@@ -87,8 +87,9 @@ function parseArgs(argv) {
 
 function resolvePluginDir(repoPath, pluginId) {
   for (const parent of ["plugins-official", "plugins-community", join("dist", "plugins")]) {
-    const candidate = join(repoPath, parent, pluginId);
-    if (existsSync(join(candidate, ".claude-plugin", "plugin.json"))
+    const candidate = findPluginDirectory(repoPath, parent, pluginId);
+    if (candidate
+        && existsSync(join(candidate, ".claude-plugin", "plugin.json"))
         && existsSync(join(candidate, "skills"))) return candidate;
   }
   return null;
@@ -154,7 +155,7 @@ function installSkill(source, destination, mode) {
   cpSync(source, destination, { recursive: true, dereference: true });
 }
 
-function installPluginAssets(pluginDir, plugin, target, sourceDefinition) {
+function installPluginAssets(pluginDir, plugin, target, sourceDefinition, skillRewrites) {
   const relativeRoot = `.cannbot/plugins/${plugin.name}`;
   const destinationRoot = join(target, relativeRoot);
   rmSync(destinationRoot, { recursive: true, force: true });
@@ -178,28 +179,48 @@ function installPluginAssets(pluginDir, plugin, target, sourceDefinition) {
     return null;
   }
   const workflows = join(destinationRoot, "workflows");
-  if (existsSync(workflows)) rewriteTreeReferences(workflows, assets);
+  if (existsSync(workflows)) rewriteTreeReferences(workflows, assets, skillRewrites);
   return assets;
 }
 
-function rewritePluginReferences(markdown, assets) {
-  if (!assets) return markdown;
-  return markdown
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Agent and workflow bodies address Skill scripts as `skills/<name>/...`, which resolves
+// inside the plugin tree but not from a user project, where Skills are installed under the
+// tool's own Skills directory. Build one rewrite per Skill that actually resolved, so that
+// prose such as "put the file in skills/" is left alone.
+function skillPathRewrites(resolvedSkills, skillsDir) {
+  if (!skillsDir || !resolvedSkills?.length) return null;
+  return resolvedSkills.map((skill) => ({
+    pattern: new RegExp(`(^|[\\s"'\`(])skills/${escapeRegExp(skill.name)}/`, "gm"),
+    installed: `${join(skillsDir, skill.name)}/`,
+  }));
+}
+
+function rewritePluginReferences(markdown, assets, skillRewrites) {
+  let rewritten = markdown;
+  for (const { pattern, installed } of skillRewrites ?? []) {
+    rewritten = rewritten.replace(pattern, (match, prefix) => `${prefix}${installed}`);
+  }
+  if (!assets) return rewritten;
+  return rewritten
     .replaceAll("workflows/", `${assets.relativeRoot}/workflows/`)
     .replace(/\]\((?:\.\/)?agents\/([^\s)]+\.md(?:#[^\s)]*)?)\)/g,
       (_, agent) => `](${assets.relativeRoot}/agents/${agent})`);
 }
 
-function rewriteTreeReferences(root, assets) {
+function rewriteTreeReferences(root, assets, skillRewrites) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) {
-      rewriteTreeReferences(path, assets);
+      rewriteTreeReferences(path, assets, skillRewrites);
       continue;
     }
     if (!entry.isFile() || !/\.(?:md|txt|sh|py|json|ya?ml)$/i.test(entry.name)) continue;
     const current = readFileSync(path, "utf8");
-    const rewritten = rewritePluginReferences(current, assets);
+    const rewritten = rewritePluginReferences(current, assets, skillRewrites);
     if (rewritten !== current) writeFileSync(path, rewritten);
   }
 }
@@ -298,14 +319,14 @@ function parseAgent(markdown) {
   return { name, description, body };
 }
 
-function installAgents(pluginDir, plugin, tool, target, assets, agentsDirOverride) {
+function installAgents(pluginDir, plugin, tool, target, assets, agentsDirOverride, skillRewrites) {
   const agentsDir = agentsDirOverride ?? toolAgentsDir(target, tool);
   mkdirSync(agentsDir, { recursive: true });
   const installed = [];
 
   for (const relativeAgent of plugin.agents ?? []) {
     const source = resolve(pluginDir, relativeAgent);
-    const markdown = rewritePluginReferences(readFileSync(source, "utf8"), assets);
+    const markdown = rewritePluginReferences(readFileSync(source, "utf8"), assets, skillRewrites);
     if (tool !== "codex") {
       const destination = join(agentsDir, basename(source));
       rmSync(destination, { recursive: true, force: true });
@@ -328,7 +349,7 @@ function installAgents(pluginDir, plugin, tool, target, assets, agentsDirOverrid
   return installed;
 }
 
-function installInstructions(pluginDir, plugin, target, tool, assets) {
+function installInstructions(pluginDir, plugin, target, tool, assets, skillRewrites) {
   const source = join(pluginDir, "AGENTS.md");
   if (!existsSync(source)) return null;
   const destination = join(target, tool === "claude" ? "CLAUDE.md" : "AGENTS.md");
@@ -337,7 +358,7 @@ function installInstructions(pluginDir, plugin, target, tool, assets) {
   const withoutOldBlock = current
     .replace(new RegExp(`${markers.start}[\\s\\S]*?${markers.end}\\s*`, "g"), "")
     .trimEnd();
-  const pluginInstructions = rewritePluginReferences(readFileSync(source, "utf8"), assets).trim();
+  const pluginInstructions = rewritePluginReferences(readFileSync(source, "utf8"), assets, skillRewrites).trim();
   const parts = [withoutOldBlock, markers.start, pluginInstructions, markers.end, ""].filter(Boolean);
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, parts.join("\n\n"));
@@ -803,9 +824,12 @@ function install(options) {
     installedSkills.push(destination);
   }
 
-  const assets = installPluginAssets(pluginDir, plugin, options.target, sourceDefinition);
-  const installedAgents = installAgents(pluginDir, plugin, options.tool, options.target, assets);
-  const instructions = installInstructions(pluginDir, plugin, options.target, options.tool, assets);
+  const skillRewrites = skillPathRewrites(resolvedSkills, skillsDir);
+  const assets = installPluginAssets(pluginDir, plugin, options.target, sourceDefinition, skillRewrites);
+  const installedAgents = installAgents(pluginDir, plugin, options.tool, options.target, assets,
+    undefined, skillRewrites);
+  const instructions = installInstructions(pluginDir, plugin, options.target, options.tool, assets,
+    skillRewrites);
   const permissionsDir = installPermissions(pluginDir, options.target);
   const runtimeSettings = installRuntimeSettings(pluginDir, options.target, options);
   const nativeHookSettings = installNativeHooks(pluginDir, options.target, options.tool, assets);

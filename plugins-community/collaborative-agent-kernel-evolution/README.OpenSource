@@ -1,0 +1,38 @@
+[
+  {
+    "Name": "ascendopgenagent AscendC operator-generation references and scripts",
+    "License": "Apache-2.0",
+    "License File": "LICENSE-APACHE",
+    "Version Number": "d530e7b",
+    "Owner": "just-it (repository owner; upstream declares no copyright holder)",
+    "Upstream URL": "https://github.com/just-it/ascendopgenagent",
+    "Description": "Reference operator implementations, DSL input/output examples and project-generation scripts under skills/ascend-call-generation/, skills/dsl-baseline-generation/, skills/functional-conversion/ and skills/ascendc-evaluation/scripts/generate_pybind.py. Obtained from this repository, which offers the content under Apache-2.0 and carries no file-level copyright notices; each affected file records that provenance plus a modification notice. The exact file list is recorded in OAT.xml."
+  },
+  {
+    "Name": "Ascend samples CppExtension setup template",
+    "License": "Apache-2.0",
+    "License File": "LICENSE-APACHE",
+    "Version Number": "vendored",
+    "Owner": "Huawei Technologies Co., Ltd",
+    "Upstream URL": "https://gitee.com/ascend/samples",
+    "Description": "The torch_npu path discovery and source collection block in skills/ascendc-evaluation/scripts/template/CppExtension/setup.py is taken from operator/ascendc/0_introduction/1_add_frameworklaunch/CppExtensionInvocation/setup.py."
+  },
+  {
+    "Name": "torch_npu PyTorch NPU helper header",
+    "License": "BSD-3-Clause",
+    "License File": "skills/ascendc-evaluation/scripts/template/CppExtension/csrc/pytorch_npu_helper.hpp",
+    "Version Number": "vendored",
+    "Owner": "Huawei Technologies Co., Ltd",
+    "Upstream URL": "https://gitee.com/ascend/pytorch",
+    "Description": "skills/ascendc-evaluation/scripts/template/CppExtension/csrc/pytorch_npu_helper.hpp is the torch_npu helper header, vendored for the pybind operator template. It retains its upstream BSD-3-Clause notice; the same file is registered under the identical terms elsewhere in this plugin family."
+  },
+  {
+    "Name": "Chart.js",
+    "License": "MIT",
+    "License File": "skills/op-dashboard/assets/chart.umd.min.js",
+    "Version Number": "4.4.7",
+    "Owner": "Chart.js Contributors",
+    "Upstream URL": "https://www.chartjs.org",
+    "Description": "Vendored minified UMD build used by the op-dashboard skill to render evaluation charts offline. The MIT notice is retained in the file banner."
+  }
+]

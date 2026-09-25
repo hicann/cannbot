@@ -11,7 +11,37 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+
+// A community plugin ships its own licence, so the repository licence is not stamped
+// onto it. Its parent directory is what marks it as community-owned.
+// The marketplace advertises a plugin by its manifest name, which need not match the
+// directory holding it — `cake` lives in `collaborative-agent-kernel-evolution`. Try the
+// direct path first, then fall back to matching the manifest name.
+export function findPluginDirectory(repositoryRoot, parent, pluginId) {
+  const direct = join(repositoryRoot, parent, pluginId);
+  if (existsSync(join(direct, ".claude-plugin", "plugin.json"))) return direct;
+  const parentRoot = join(repositoryRoot, parent);
+  if (!existsSync(parentRoot)) return null;
+  const entries = readdirSync(parentRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const candidate = join(parentRoot, entry.name);
+    const manifest = join(candidate, ".claude-plugin", "plugin.json");
+    if (!existsSync(manifest)) continue;
+    try {
+      if (readJson(manifest).name === pluginId) return candidate;
+    } catch {
+      // A manifest that will not parse is reported where it is read, not here.
+    }
+  }
+  return null;
+}
+
+function isCommunityPlugin(pluginRoot) {
+  return basename(dirname(pluginRoot)) === "plugins-community";
+}
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -25,8 +55,8 @@ function assertInside(root, candidate, label) {
 
 export function pluginSourceDefinition(repositoryRoot, pluginId, pluginDirectory = null) {
   const pluginRoot = pluginDirectory ?? ["plugins-official", "plugins-community"]
-    .map((parent) => join(repositoryRoot, parent, pluginId))
-    .find((candidate) => existsSync(join(candidate, "plugin-sources.json")))
+    .map((parent) => findPluginDirectory(repositoryRoot, parent, pluginId))
+    .find((candidate) => candidate && existsSync(join(candidate, "plugin-sources.json")))
     ?? join(repositoryRoot, "plugins-official", pluginId);
   const definitionPath = join(pluginRoot, "plugin-sources.json");
   if (!existsSync(definitionPath)) return null;
@@ -36,6 +66,10 @@ export function pluginSourceDefinition(repositoryRoot, pluginId, pluginDirectory
   }
   if (definition.skillInstallMode !== undefined && definition.skillInstallMode !== "symlink") {
     throw new Error(`invalid Skill install mode in ${definitionPath}`);
+  }
+  if (definition.preserveSkillInvocationPolicy !== undefined
+    && typeof definition.preserveSkillInvocationPolicy !== "boolean") {
+    throw new Error(`invalid preserveSkillInvocationPolicy in ${definitionPath}`);
   }
   return { pluginRoot, definitionPath, ...definition };
 }
@@ -67,7 +101,7 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
     const destination = join(outputRoot, "plugins", pluginId);
     rmSync(destination, { recursive: true, force: true });
     mkdirSync(destination, { recursive: true });
-    cpSync(pluginLicense, join(destination, "LICENSE"));
+    if (!isCommunityPlugin(source.pluginRoot)) cpSync(pluginLicense, join(destination, "LICENSE"));
 
     for (const entry of readdirSync(source.pluginRoot, { withFileTypes: true })) {
       if (entry.name === "skills" || entry.name === "plugin-sources.json") continue;
@@ -95,6 +129,9 @@ export function assemblePlugins(repositoryRoot, outputRoot, selectedPluginIds) {
         dereference: true,
         filter: (path) => basename(path) !== "__pycache__" && !path.endsWith(".pyc"),
       });
+      // A plugin may declare that its Skills carry their own invocation policy, in which
+      // case each SKILL.md keeps the value it was authored with.
+      if (source.preserveSkillInvocationPolicy === true) return;
       const skillManifest = join(skillDestination, "SKILL.md");
       const skillMd = readFileSync(skillManifest, "utf8")
         .replace(/^disable-model-invocation:\s*true\s*$/m, "disable-model-invocation: false");

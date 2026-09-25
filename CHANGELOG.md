@@ -4,9 +4,54 @@ This file records notable changes to the CANNBot plugin orchestration and delive
 
 ## Unreleased
 
+### Added
+
+- Community plugin channel: `plugins-community/` is recognised by the bundler and the
+  installer, and a community plugin is indexed by its manifest `name`, so its directory
+  name is only a storage location. `plugins-official/` keeps the rule that the directory
+  name is the plugin id.
+- Agent and workflow bodies have `skills/<name>/` references rewritten to the installed
+  Skill path, matched only against Skill names that resolved, so prose is not altered.
+- A Skill name claimed by two plugins is refused only when the resolved sources differ;
+  two plugins resolving the same Skill from the same place install as before.
+- Community plugin `cake` (CAKE2, Collaborative Ascend Kernel Evolution): 19 Skills and
+  3 agents for AscendC operator generation and evaluation, at
+  `plugins-community/collaborative-agent-kernel-evolution/`. The content is the copy
+  published in `cann/cannbot-skills`; registration files (`plugin-sources.json`,
+  `init.sh`, `.codex-plugin/plugin.json`, marketplace entry, `OAT.xml` filteritem) are
+  new here. The remaining Skills of the TileLang, EasyAsc and CV routes follow separately.
+- Third-party attribution for cake: 40 files obtained from `just-it/ascendopgenagent`
+  (commit `d530e7b`, offered under Apache-2.0) now record that provenance and a
+  modification notice instead of a CANN-2.0 header. The notice states where the content
+  came from rather than who holds copyright in it, because that repository declares no
+  copyright holder and is not the origin of the Triton-derived DSL it documents; `LICENSE-APACHE` ships with the
+  plugin, `README.OpenSource` records the component, and `OAT.xml` exempts those paths
+  from the CANN-2.0 header policy. `skills/reference-generation/references/hardtanh.py`
+  The torch_npu path block in `skills/ascendc-evaluation/scripts/template/CppExtension/
+  setup.py` is registered against the Ascend samples (Apache-2.0). The notices lead with Huawei's
+  modification claim so the repository's header rule still matches, and state the
+  acquisition route rather than asserting who holds copyright upstream.
+- `skills/ascendc-evaluation/scripts/template/CppExtension/csrc/pytorch_npu_helper.hpp`
+  has its upstream BSD-3-Clause notice restored and is registered as third-party. The
+  notice had been replaced with a CANN-2.0 header, while a second copy of the same file
+  elsewhere in this plugin family retains BSD-3-Clause and is registered under it. The
+  composition scan did not report this file.
+- `skills/cake-docs-search/scripts/*` record that they share origin with
+  `ops/ascendc-docs-search` in `cann/cannbot-skills`, which this plugin vendors as
+  `vendor/cannbot-skills`, first published in CAKE2 on 2026-03-24.
+- `skills/reference-generation/references/hardtanh.py` is removed from this change.
+  It adapted a Stanford KernelBench task, and the step 4 bullet in that skill's
+  `SKILL.md` which pointed at it is removed with it; `linear_softplus.py` remains as
+  the reference example for that step.
+
 ### Changed
 
 - Renamed the official plugin directory `plugins/` to `plugins-official/`, aligning with the `cannbot-skills` repository layout and pairing with `plugins-community/`; updated the marketplace sources, installer discovery paths, bundling, tests, and documentation accordingly. The npm package layout (`dist/plugins/`) and the installed layout (`.cannbot/plugins/`) are unchanged.
+- A plugin may set `preserveSkillInvocationPolicy` in `plugin-sources.json` to keep the
+  `disable-model-invocation` value each of its Skills was authored with. Without it the
+  bundler rewrites the value as before.
+- Community plugins are not stamped with a plugin-root licence; each keeps the licence it
+  ships with, and `plugins-community/` carries none.
 
 ## 1.3.2 - 2026-08-31
 
