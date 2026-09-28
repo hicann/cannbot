@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from unittest.mock import patch
 from pathlib import Path
 
@@ -71,16 +72,39 @@ def _workflow_yaml(nodes, max_parallel=1, max_rollbacks=None):
     return yaml.safe_dump(wf, sort_keys=False)
 
 
-def run_orchestrator(nodes=None, yaml_text=None, dry_replies=None, max_parallel=1,
-                     max_rollbacks=None, pre_files=None):
+@dataclass(frozen=True)
+class WorkflowOptions:
+    max_parallel: int = 1
+    max_rollbacks: int | None = None
+
+
+def _rollback_nodes():
+    """Two-node workflow in which b rolls back to a."""
+    return [
+        _node("a"),
+        _node("b", depends_on=["a"], on_exhaust="rollback", rollback_to="a"),
+    ]
+
+
+def run_orchestrator(
+    nodes=None,
+    yaml_text=None,
+    dry_replies=None,
+    options=None,
+    pre_files=None,
+):
     """Run orchestrator.py with --dry-run; return (exit_code, output, work_dir).
 
     pre_files: {相对路径: 内容}，运行前写入 work_dir（如子图 yaml、手工 status.json）。
     """
+    options = options or WorkflowOptions()
     work_dir = tempfile.mkdtemp(prefix="wo-test-")
     wf_path = Path(work_dir) / "workflow.yaml"
-    wf_path.write_text(yaml_text if yaml_text is not None
-                       else _workflow_yaml(nodes, max_parallel, max_rollbacks))
+    wf_path.write_text(
+        yaml_text
+        if yaml_text is not None
+        else _workflow_yaml(nodes, options.max_parallel, options.max_rollbacks)
+    )
     for rel, content in (pre_files or {}).items():
         p = Path(work_dir) / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -90,8 +114,17 @@ def run_orchestrator(nodes=None, yaml_text=None, dry_replies=None, max_parallel=
         wr.mkdir(parents=True, exist_ok=True)
         (wr / "dry_replies.json").write_text(json.dumps(dry_replies))
     proc = subprocess.run(
-        [sys.executable, str(ORCHESTRATOR), "--yaml", str(wf_path),
-         "--work-dir", work_dir, "--dry-run", "--prompt", "test"],
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--yaml",
+            str(wf_path),
+            "--work-dir",
+            work_dir,
+            "--dry-run",
+            "--prompt",
+            "test",
+        ],
         capture_output=True,
         text=True,
     )
@@ -110,9 +143,18 @@ def read_log(work_dir):
 def _run_orchestrator_dry(wf, work_dir):
     """以 --dry-run 运行编排器（work_dir 已就绪）；返回 (returncode, out)。"""
     proc = subprocess.run(
-        [sys.executable, str(ORCHESTRATOR), "--yaml", str(wf),
-         "--work-dir", work_dir, "--dry-run"],
-        capture_output=True, text=True)
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--yaml",
+            str(wf),
+            "--work-dir",
+            work_dir,
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+    )
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -138,22 +180,39 @@ class OrchestratorTest(unittest.TestCase):
         wr = Path(work_dir) / ".workflow"
         wr.mkdir()
         (wr / "user_prompt.md").write_text("test\n")
-        (wr / "status.json").write_text(json.dumps({
-            "workflow": str(wf), "work_dir": work_dir,
-            "user_prompt": str(wr / "user_prompt.md"),
-            "provider": "dry", "seq": seq, "rollbacks_used": 0,
-            "tasks": tasks,
-        }))
+        (wr / "status.json").write_text(
+            json.dumps(
+                {
+                    "workflow": str(wf),
+                    "work_dir": work_dir,
+                    "user_prompt": str(wr / "user_prompt.md"),
+                    "provider": "dry",
+                    "seq": seq,
+                    "rollbacks_used": 0,
+                    "tasks": tasks,
+                }
+            )
+        )
         (wr / "dry_replies.json").write_text(json.dumps(dry_replies or {}))
         return work_dir, wf, wr
 
     def _pending_advice_fixture(self):
-        nodes = [_node("a"), _node("b", depends_on=["a"],
-                  on_exhaust="rollback", rollback_to="a")]
-        wd, wf, wr = self._legacy_work_dir(nodes, {
-            "a": {"status": "pass", "retries": 0, "pass_seq": 1, "checkpoint_seq": 0},
-            "b": {"status": "fail", "retries": 1},
-        })
+        nodes = [
+            _node("a"),
+            _node("b", depends_on=["a"], on_exhaust="rollback", rollback_to="a"),
+        ]
+        wd, wf, wr = self._legacy_work_dir(
+            nodes,
+            {
+                "a": {
+                    "status": "pass",
+                    "retries": 0,
+                    "pass_seq": 1,
+                    "checkpoint_seq": 0,
+                },
+                "b": {"status": "fail", "retries": 1},
+            },
+        )
         ckpt = wr / "checkpoints" / "a"
         ckpt.mkdir(parents=True)
         (ckpt / "workflow.yaml").write_text(wf.read_text())
@@ -162,8 +221,11 @@ class OrchestratorTest(unittest.TestCase):
         return wd, wf, wr
 
     def _poll_advice(self, wd):
-        proc = subprocess.run([sys.executable, str(SKILL_ROOT / "scripts/get_task.py"), wd],
-                              capture_output=True, text=True)
+        proc = subprocess.run(
+            [sys.executable, str(SKILL_ROOT / "scripts/get_task.py"), wd],
+            capture_output=True,
+            text=True,
+        )
         self.assertIn(proc.returncode, (0, 1), proc.stderr)
         return json.loads(proc.stdout)
 
@@ -202,7 +264,9 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_orchestrator_stops_when_advice_output_missing(self):
         wd, wf, wr = self._pending_advice_fixture()
-        with patch.object(get_task.orch, "run_agent", return_value=("advice-written", False)) as run:
+        with patch.object(
+            get_task.orch, "run_agent", return_value=("advice-written", False)
+        ) as run:
             result = get_task.orch.loop(wd, None, None)
         self.assertEqual(result, 1)
         self.assertEqual(run.call_count, 1)
@@ -223,9 +287,20 @@ class OrchestratorTest(unittest.TestCase):
         self._work_dirs.append(wd)
         wf = Path(wd) / "workflow.yaml"
         wf.write_text(_workflow_yaml([_node("a")]))
-        proc = subprocess.run([sys.executable, str(SKILL_ROOT / "scripts/init_status.py"),
-                               "--yaml", str(wf), "--work-dir", wd, "--prompt", "test"],
-                              capture_output=True, text=True)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SKILL_ROOT / "scripts/init_status.py"),
+                "--yaml",
+                str(wf),
+                "--work-dir",
+                wd,
+                "--prompt",
+                "test",
+            ],
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("provider", read_status(wd))
 
@@ -241,7 +316,7 @@ class OrchestratorTest(unittest.TestCase):
         code, out, wd = self._run(nodes=[_node("setup")])
         self.assertEqual(code, 0, out)
         status = read_status(wd)
-        self.assertEqual(status.get("provider"), "dry")
+        self.assertNotIn("provider", status)
         self.assertEqual(status.get("rollbacks_used"), 0)
         self.assertGreaterEqual(status.get("seq", 0), 1)
         task = status["tasks"]["setup"]
@@ -249,10 +324,16 @@ class OrchestratorTest(unittest.TestCase):
         self.assertNotIn("advice", task)
 
     def test_checkpoint_snapshot_taken(self):
-        nodes = [_node("setup"),
-                 _node("rollback", depends_on=["setup"], on_exhaust="rollback",
-                       rollback_to="setup"),
-                 _node("downstream", depends_on=["rollback"])]
+        nodes = [
+            _node("setup"),
+            _node(
+                "rollback",
+                depends_on=["setup"],
+                on_exhaust="rollback",
+                rollback_to="setup",
+            ),
+            _node("downstream", depends_on=["rollback"]),
+        ]
         code, out, wd = self._run(nodes=nodes, pre_files={"hello.txt": "hi\n"})
         self.assertEqual(code, 0, out)
         ckpt = Path(wd) / ".workflow" / "checkpoints" / "setup"
@@ -265,7 +346,9 @@ class OrchestratorTest(unittest.TestCase):
         self.assertNotIn("checkpoint_seq", status["tasks"]["rollback"])
         self.assertNotIn("checkpoint_seq", status["tasks"]["downstream"])
         self.assertFalse((Path(wd) / ".workflow" / "checkpoints" / "rollback").exists())
-        self.assertFalse((Path(wd) / ".workflow" / "checkpoints" / "downstream").exists())
+        self.assertFalse(
+            (Path(wd) / ".workflow" / "checkpoints" / "downstream").exists()
+        )
 
     def test_dependency_chain_completes(self):
         nodes = [_node("a"), _node("b", depends_on=["a"])]
@@ -277,14 +360,16 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_independent_nodes_run_in_parallel(self):
         nodes = [_node("a"), _node("b")]
-        code, out, wd = self._run(nodes=nodes, max_parallel=2)
+        code, out, wd = self._run(nodes=nodes, options=WorkflowOptions(max_parallel=2))
         self.assertEqual(code, 0, out)
         tasks = read_status(wd)["tasks"]
         self.assertEqual(tasks["a"]["status"], "pass")
         self.assertEqual(tasks["b"]["status"], "pass")
 
     def test_empty_nodes_rejected(self):
-        code, out, _ = self._run(yaml_text="workflow: test\nmax_parallel: 1\nnodes: []\n")
+        code, out, _ = self._run(
+            yaml_text="workflow: test\nmax_parallel: 1\nnodes: []\n"
+        )
         self.assertEqual(code, 1, out)
         self.assertIn("没有任务节点", out)
 
@@ -303,7 +388,10 @@ class OrchestratorTest(unittest.TestCase):
     def test_retry_then_pass(self):
         node = _node("t1", max_retries=1)
         code, out, wd = self._run(
-            nodes=[node], dry_replies={"t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"]},
+            nodes=[node],
+            dry_replies={
+                "t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"]
+            },
         )
         self.assertEqual(code, 0, out)
         task = read_status(wd)["tasks"]["t1"]
@@ -313,7 +401,10 @@ class OrchestratorTest(unittest.TestCase):
     def test_fail_exhausts_budget(self):
         node = _node("t1", max_retries=1)
         code, out, wd = self._run(
-            nodes=[node], dry_replies={"t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:fail"]},
+            nodes=[node],
+            dry_replies={
+                "t1": ["executed", "$VERDICT:fail", "executed", "$VERDICT:fail"]
+            },
         )
         self.assertEqual(code, 1, out)
         task = read_status(wd)["tasks"]["t1"]
@@ -324,7 +415,9 @@ class OrchestratorTest(unittest.TestCase):
     def test_max_rollbacks_invalid_rejected(self):
         node = _node("t1")
         for bad in (-1, 1.5, "2", True):
-            code, out, _ = self._run(yaml_text=_workflow_yaml([node], max_rollbacks=bad))
+            code, out, _ = self._run(
+                yaml_text=_workflow_yaml([node], max_rollbacks=bad)
+            )
             self.assertEqual(code, 2, out)
             self.assertIn("max_rollbacks", out)
 
@@ -335,37 +428,54 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_rollback_to_ignored_when_on_exhaust_not_rollback(self):
         # on_exhaust!=rollback：rollback_to 完全忽略，即使指向不存在的节点也照常跑完
-        code, out, wd = self._run(nodes=[_node("t1", on_exhaust="exit", rollback_to="ghost")])
+        code, out, wd = self._run(
+            nodes=[_node("t1", on_exhaust="exit", rollback_to="ghost")]
+        )
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
 
     def test_rollback_to_unknown_rejected(self):
-        code, out, _ = self._run(nodes=[_node("t1", on_exhaust="rollback", rollback_to="ghost")])
+        code, out, _ = self._run(
+            nodes=[_node("t1", on_exhaust="rollback", rollback_to="ghost")]
+        )
         self.assertEqual(code, 2, out)
         self.assertIn("rollback_to", out)
 
     def test_rollback_to_non_ancestor_rejected(self):
-        nodes = [_node("a"), _node("b", depends_on=["a"]),
-                 _node("c", on_exhaust="rollback", rollback_to="b")]  # c 不依赖 b
+        nodes = [
+            _node("a"),
+            _node("b", depends_on=["a"]),
+            _node("c", on_exhaust="rollback", rollback_to="b"),
+        ]  # c 不依赖 b
         code, out, _ = self._run(nodes=nodes)
         self.assertEqual(code, 2, out)
         self.assertIn("上游", out)
 
     def test_rollback_to_subgraph_container_rejected(self):
-        nodes = [_node("a"),
-                 {"id": "sg", "task_type": "subgraph", "file": "sub.yaml", "depends_on": ["a"]},
-                 _node("b", depends_on=["a"], on_exhaust="rollback", rollback_to="sg")]
+        nodes = [
+            _node("a"),
+            {
+                "id": "sg",
+                "task_type": "subgraph",
+                "file": "sub.yaml",
+                "depends_on": ["a"],
+            },
+            _node("b", depends_on=["a"], on_exhaust="rollback", rollback_to="sg"),
+        ]
         code, out, _ = self._run(nodes=nodes)
         self.assertEqual(code, 2, out)
         self.assertIn("subgraph", out)
 
     def test_rollback_budget_exhausted_stuck(self):
-        nodes = [_node("a"),
-                 _node("b", depends_on=["a"], max_retries=0,
-                       on_exhaust="rollback", rollback_to="a")]
-        code, out, wd = self._run(nodes=nodes, max_rollbacks=0,
-                                  dry_replies={"a": ["executed", "$VERDICT:pass"],
-                                               "b": ["executed", "$VERDICT:fail"]})
+        nodes = _rollback_nodes()
+        code, out, wd = self._run(
+            nodes=nodes,
+            options=WorkflowOptions(max_rollbacks=0),
+            dry_replies={
+                "a": ["executed", "$VERDICT:pass"],
+                "b": ["executed", "$VERDICT:fail"],
+            },
+        )
         self.assertEqual(code, 1, out)
         self.assertIn("回滚预算耗尽", out)
         self.assertIn("工作流卡住", out)
@@ -375,9 +485,18 @@ class OrchestratorTest(unittest.TestCase):
     def test_subgraph_child_rollback_to_outside_rejected(self):
         # 子图子节点的 rollback_to 在子图命名空间解析：引用父级节点 = 引用不存在
         sub = {"nodes": [_node("x", on_exhaust="rollback", rollback_to="a")]}
-        nodes = [_node("a"),
-                 {"id": "sg", "task_type": "subgraph", "file": "sub.yaml", "depends_on": ["a"]}]
-        code, out, _ = self._run(nodes=nodes, pre_files={"sub.yaml": yaml.safe_dump(sub)})
+        nodes = [
+            _node("a"),
+            {
+                "id": "sg",
+                "task_type": "subgraph",
+                "file": "sub.yaml",
+                "depends_on": ["a"],
+            },
+        ]
+        code, out, _ = self._run(
+            nodes=nodes, pre_files={"sub.yaml": yaml.safe_dump(sub)}
+        )
         self.assertEqual(code, 2, out)
         self.assertIn("rollback_to", out)
 
@@ -385,16 +504,22 @@ class OrchestratorTest(unittest.TestCase):
         nodes = [
             _node("a"),
             _node("b", depends_on=["a"]),
-            _node("c", depends_on=["b"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
+            _node(
+                "c",
+                depends_on=["b"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
         ]
         replies = {
             "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "b": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "c": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies,
-                                  pre_files={"seed.txt": "v1\n"})
+        code, out, wd = self._run(
+            nodes=nodes, dry_replies=replies, pre_files={"seed.txt": "v1\n"}
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -406,10 +531,14 @@ class OrchestratorTest(unittest.TestCase):
         self.assertTrue((Path(wd) / ".workflow" / "advice" / "c.to.a.1.md").is_file())
         self.assertNotIn("advice", status["tasks"]["a"])
         # 失败时间线产物已归档；seed.txt 在 checkpoint(a) 拍摄前已存在，恢复后仍在
-        self.assertTrue((Path(wd) / ".workflow" / "history" / "c.to.a.1" / "seed.txt").is_file())
+        self.assertTrue(
+            (Path(wd) / ".workflow" / "history" / "c.to.a.1" / "seed.txt").is_file()
+        )
         self.assertTrue((Path(wd) / "seed.txt").is_file())
         # 重置时删旧 checkpoint，重跑时重拍
-        self.assertTrue((Path(wd) / ".workflow" / "checkpoints" / "a" / "seed.txt").is_file())
+        self.assertTrue(
+            (Path(wd) / ".workflow" / "checkpoints" / "a" / "seed.txt").is_file()
+        )
         # 日志含 rollback 事件（带 history/advice 字段）
         rollbacks = [e for e in read_log(wd) if e["event"] == "rollback"]
         self.assertEqual(len(rollbacks), 1)
@@ -422,16 +551,27 @@ class OrchestratorTest(unittest.TestCase):
         # b 快速失败触发回滚时 d 仍在执行 → 输出 [] 自然排干，d 收尾后才执行回滚
         nodes = [
             _node("a"),
-            _node("b", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
+            _node(
+                "b",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
             _node("d", depends_on=["a"]),
         ]
         replies = {
             "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
-            "d": ["$SLEEP:2", "executed", "$VERDICT:pass"],  # 首轮 execute 慢；executed 态被重置后重做
+            "d": [
+                "$SLEEP:2",
+                "executed",
+                "$VERDICT:pass",
+            ],  # 首轮 execute 慢；executed 态被重置后重做
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
+        code, out, wd = self._run(
+            nodes=nodes, dry_replies=replies, options=WorkflowOptions(max_parallel=2)
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -442,9 +582,7 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_rollback_without_checkpoint_stuck(self):
         # 旧账本：a 无 checkpoint_seq → 回滚无法执行 → STUCK，rollback_pending 留账
-        nodes = [_node("a"),
-                 _node("b", depends_on=["a"], max_retries=0,
-                       on_exhaust="rollback", rollback_to="a")]
+        nodes = _rollback_nodes()
         tasks = {
             "a": {"status": "pass", "retries": 0},  # 旧账本：无 pass_seq/checkpoint_seq
             "b": {"status": "fail", "retries": 1, "exhausted": True},
@@ -456,20 +594,37 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("rollback_pending", read_status(work_dir))
 
     def test_subgraph_child_rollback(self):
-        sub = {"nodes": [
-            _node("x"),
-            _node("y", depends_on=["x"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="x"),
-        ]}
-        nodes = [_node("pre"),
-                 {"id": "sg", "task_type": "subgraph", "file": "sub.yaml", "depends_on": ["pre"]}]
+        sub = {
+            "nodes": [
+                _node("x"),
+                _node(
+                    "y",
+                    depends_on=["x"],
+                    max_retries=0,
+                    on_exhaust="rollback",
+                    rollback_to="x",
+                ),
+            ]
+        }
+        nodes = [
+            _node("pre"),
+            {
+                "id": "sg",
+                "task_type": "subgraph",
+                "file": "sub.yaml",
+                "depends_on": ["pre"],
+            },
+        ]
         replies = {
             "pre": ["executed", "$VERDICT:pass"],
             "sg/x": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "sg/y": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies,
-                                  pre_files={"sub.yaml": yaml.safe_dump(sub)})
+        code, out, wd = self._run(
+            nodes=nodes,
+            dry_replies=replies,
+            pre_files={"sub.yaml": yaml.safe_dump(sub)},
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -477,8 +632,12 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual(status["tasks"][tid]["status"], "pass")
         # 子图子任务的 checkpoint 按 sg/child 嵌套；advice/history 文件名 / 转写为 __
         self.assertTrue((Path(wd) / ".workflow" / "checkpoints" / "sg" / "x").is_dir())
-        self.assertTrue((Path(wd) / ".workflow" / "advice" / "sg__y.to.sg__x.1.md").is_file())
-        self.assertTrue((Path(wd) / ".workflow" / "history" / "sg__y.to.sg__x.1").is_dir())
+        self.assertTrue(
+            (Path(wd) / ".workflow" / "advice" / "sg__y.to.sg__x.1.md").is_file()
+        )
+        self.assertTrue(
+            (Path(wd) / ".workflow" / "history" / "sg__y.to.sg__x.1").is_dir()
+        )
         self.assertEqual(status.get("checkpoint_targets"), ["sg/x"])
         self.assertNotIn("checkpoint_seq", status["tasks"]["sg/y"])
         self.assertFalse((Path(wd) / ".workflow" / "checkpoints" / "sg" / "y").exists())
@@ -494,16 +653,28 @@ class OrchestratorTest(unittest.TestCase):
         # c 与 b 平行（都依赖 a）；c 在 checkpoint(a) 之后 pass → 回滚时一并重置重跑
         nodes = [
             _node("a"),
-            _node("b", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
+            _node(
+                "b",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
             _node("c", depends_on=["a"]),
         ]
         replies = {
             "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
-            "b": ["$SLEEP:2", "$VERDICT:fail", "executed", "$VERDICT:pass"],  # 首轮 execute 慢，让 c 先 pass
+            "b": [
+                "$SLEEP:2",
+                "$VERDICT:fail",
+                "executed",
+                "$VERDICT:pass",
+            ],  # 首轮 execute 慢，让 c 先 pass
             "c": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
+        code, out, wd = self._run(
+            nodes=nodes, dry_replies=replies, options=WorkflowOptions(max_parallel=2)
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -517,19 +688,38 @@ class OrchestratorTest(unittest.TestCase):
         sub = {"nodes": [_node("k")]}
         nodes = [
             _node("a"),
-            {"id": "sg", "task_type": "subgraph", "file": "sub.yaml", "depends_on": ["a"]},
+            {
+                "id": "sg",
+                "task_type": "subgraph",
+                "file": "sub.yaml",
+                "depends_on": ["a"],
+            },
             _node("x2", depends_on=["sg"], max_retries=0, on_exhaust="continue"),
-            _node("x", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
+            _node(
+                "x",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
         ]
         replies = {
             "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "sg/k": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
-            "x": ["$SLEEP:2", "$VERDICT:fail", "executed", "$VERDICT:pass"],  # 首轮 execute 慢，让 x2 先耗尽
+            "x": [
+                "$SLEEP:2",
+                "$VERDICT:fail",
+                "executed",
+                "$VERDICT:pass",
+            ],  # 首轮 execute 慢，让 x2 先耗尽
             "x2": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2,
-                                  pre_files={"sub.yaml": yaml.safe_dump(sub)})
+        code, out, wd = self._run(
+            nodes=nodes,
+            dry_replies=replies,
+            options=WorkflowOptions(max_parallel=2),
+            pre_files={"sub.yaml": yaml.safe_dump(sub)},
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -538,10 +728,17 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_rollback_pending_exit_exhausted_stuck_first(self):
         # rollback_pending 待执行时另一节点 exit 耗尽 → STUCK 优先，回滚不执行、标记留账
-        nodes = [_node("a"),
-                 _node("b", depends_on=["a"], max_retries=0,
-                       on_exhaust="rollback", rollback_to="a"),
-                 _node("e", depends_on=["a"], max_retries=0, on_exhaust="exit")]
+        nodes = [
+            _node("a"),
+            _node(
+                "b",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
+            _node("e", depends_on=["a"], max_retries=0, on_exhaust="exit"),
+        ]
         tasks = {
             "a": {"status": "pass", "retries": 0},
             "b": {"status": "fail", "retries": 1, "exhausted": True},
@@ -561,17 +758,29 @@ class OrchestratorTest(unittest.TestCase):
         # 同轮第二个 rollback 触发不置标记不吃预算：回滚执行时一并重置（免费重做）
         nodes = [
             _node("a"),
-            _node("b", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
-            _node("c", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
+            _node(
+                "b",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
+            _node(
+                "c",
+                depends_on=["a"],
+                max_retries=0,
+                on_exhaust="rollback",
+                rollback_to="a",
+            ),
         ]
         replies = {
             "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
             "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
             "c": ["executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_parallel=2)
+        code, out, wd = self._run(
+            nodes=nodes, dry_replies=replies, options=WorkflowOptions(max_parallel=2)
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 1)
@@ -580,35 +789,50 @@ class OrchestratorTest(unittest.TestCase):
 
     def test_multiple_rollbacks_sequence(self):
         # max_rollbacks=2：同一节点两次耗尽触发两次回滚，history/advice 按序号区分
-        nodes = [
-            _node("a"),
-            _node("b", depends_on=["a"], max_retries=0,
-                  on_exhaust="rollback", rollback_to="a"),
-        ]
+        nodes = _rollback_nodes()
         replies = {
-            "a": ["executed", "$VERDICT:pass", "executed", "$VERDICT:pass", "executed", "$VERDICT:pass"],
-            "b": ["executed", "$VERDICT:fail", "executed", "$VERDICT:fail", "executed", "$VERDICT:pass"],
+            "a": [
+                "executed",
+                "$VERDICT:pass",
+                "executed",
+                "$VERDICT:pass",
+                "executed",
+                "$VERDICT:pass",
+            ],
+            "b": [
+                "executed",
+                "$VERDICT:fail",
+                "executed",
+                "$VERDICT:fail",
+                "executed",
+                "$VERDICT:pass",
+            ],
         }
-        code, out, wd = self._run(nodes=nodes, dry_replies=replies, max_rollbacks=2)
+        code, out, wd = self._run(
+            nodes=nodes, dry_replies=replies, options=WorkflowOptions(max_rollbacks=2)
+        )
         self.assertEqual(code, 0, out)
         status = read_status(wd)
         self.assertEqual(status.get("rollbacks_used"), 2)
         for n in (1, 2):
-            self.assertTrue((Path(wd) / ".workflow" / "advice" / ("b.to.a.%d.md" % n)).is_file())
-            self.assertTrue((Path(wd) / ".workflow" / "history" / ("b.to.a.%d" % n)).is_dir())
+            self.assertTrue(
+                (Path(wd) / ".workflow" / "advice" / ("b.to.a.%d.md" % n)).is_file()
+            )
+            self.assertTrue(
+                (Path(wd) / ".workflow" / "history" / ("b.to.a.%d" % n)).is_dir()
+            )
         self.assertEqual(status["tasks"]["b"]["status"], "pass")
 
     def test_rollback_preserves_legacy_pass(self):
         # 旧账本 pass 任务（无 pass_seq）视为 pass_seq=0：≤ checkpoint_seq(回滚目标) 保持不动
-        nodes = [_node("a"),
-                 _node("b", depends_on=["a"], max_retries=0,
-                       on_exhaust="rollback", rollback_to="a")]
+        nodes = _rollback_nodes()
         tasks = {
             "a": {"status": "pass", "retries": 0, "checkpoint_seq": 0},  # 无 pass_seq
             "b": {"status": "fail", "retries": 1, "exhausted": True},
         }
-        work_dir, wf, wr = self._legacy_work_dir(nodes, tasks, seq=0,
-                                                 dry_replies={"b": ["executed", "$VERDICT:pass"]})
+        work_dir, wf, wr = self._legacy_work_dir(
+            nodes, tasks, seq=0, dry_replies={"b": ["executed", "$VERDICT:pass"]}
+        )
         # execute_rollback 要恢复 checkpoint(a)：真实快照含 work_dir 顶层条目（恢复后
         # clear_tree 删掉的 workflow.yaml 随之还原），这里手工对齐，只需 workflow.yaml
         ckpt_a = wr / "checkpoints" / "a"
@@ -641,13 +865,21 @@ class OrchestratorTest(unittest.TestCase):
             "a": {"status": "pass", "retries": 0, "pass_seq": 1, "checkpoint_seq": 0},
             "b": {"status": "fail", "retries": 1, "exhausted": True},
         }
-        status = {"provider": "dry", "seq": 1, "rollbacks_used": 0,
-                  "tasks": tasks, "rollback_pending": {"from": "b", "to": "a"}}
+        status = {
+            "provider": "dry",
+            "seq": 1,
+            "rollbacks_used": 0,
+            "tasks": tasks,
+            "rollback_pending": {"from": "b", "to": "a"},
+        }
         status_path = wr / "status.json"
         status_path.write_text(json.dumps(status))
         graph = ([(a, "a", []), (b, "b", ["a"])], {"a": a, "b": b}, {})
 
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertTrue((ckpt / "marker.txt").is_file())
 
         # Simulate the target's successful redo, then trigger the same rollback again.
@@ -655,7 +887,10 @@ class OrchestratorTest(unittest.TestCase):
         tasks["b"].update(status="fail", retries=1, exhausted=True)
         status["rollback_pending"] = {"from": "b", "to": "a"}
         marker.write_text("changed-after-first-rollback\n")
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertEqual(marker.read_text(), "baseline-a\n")
 
     def test_distinct_rollback_targets_keep_independent_checkpoints(self):
@@ -679,14 +914,25 @@ class OrchestratorTest(unittest.TestCase):
             "b": {"status": "pass", "retries": 0, "pass_seq": 2, "checkpoint_seq": 1},
             "c": {"status": "fail", "retries": 1, "exhausted": True},
         }
-        status = {"provider": "dry", "seq": 2, "rollbacks_used": 0,
-                  "tasks": tasks, "rollback_pending": {"from": "c", "to": "a"}}
+        status = {
+            "provider": "dry",
+            "seq": 2,
+            "rollbacks_used": 0,
+            "tasks": tasks,
+            "rollback_pending": {"from": "c", "to": "a"},
+        }
         status_path = wr / "status.json"
         status_path.write_text(json.dumps(status))
-        graph = ([(a, "a", []), (b, "b", ["a"]), (c, "c", ["b"])],
-                 {"a": a, "b": b, "c": c}, {})
+        graph = (
+            [(a, "a", []), (b, "b", ["a"]), (c, "c", ["b"])],
+            {"a": a, "b": b, "c": c},
+            {},
+        )
 
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertTrue((wr / "checkpoints" / "b" / "marker.txt").is_file())
 
         tasks["a"].update(status="pass", pass_seq=3)
@@ -694,7 +940,10 @@ class OrchestratorTest(unittest.TestCase):
         tasks["c"].update(status="fail", retries=1, exhausted=True)
         status["rollback_pending"] = {"from": "c", "to": "b"}
         marker.write_text("changed-before-second-target\n")
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertEqual(marker.read_text(), "baseline-b\n")
 
     def test_rollback_preserves_preexisting_non_target_checkpoint(self):
@@ -716,14 +965,25 @@ class OrchestratorTest(unittest.TestCase):
             "b": {"status": "pass", "retries": 0, "pass_seq": 2, "checkpoint_seq": 1},
             "c": {"status": "fail", "retries": 1, "exhausted": True},
         }
-        status = {"provider": "dry", "seq": 2, "rollbacks_used": 0,
-                  "tasks": tasks, "rollback_pending": {"from": "c", "to": "a"}}
+        status = {
+            "provider": "dry",
+            "seq": 2,
+            "rollbacks_used": 0,
+            "tasks": tasks,
+            "rollback_pending": {"from": "c", "to": "a"},
+        }
         status_path = wr / "status.json"
         status_path.write_text(json.dumps(status))
-        graph = ([(a, "a", []), (b, "b", ["a"]), (c, "c", ["b"])],
-                 {"a": a, "b": b, "c": c}, {})
+        graph = (
+            [(a, "a", []), (b, "b", ["a"]), (c, "c", ["b"])],
+            {"a": a, "b": b, "c": c},
+            {},
+        )
 
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertEqual(tasks["b"].get("checkpoint_seq"), 1)
         self.assertTrue((wr / "checkpoints" / "b" / "marker.txt").is_file())
 
@@ -742,24 +1002,42 @@ class OrchestratorTest(unittest.TestCase):
         x = _node("x")
         y = _node("y", depends_on=["x"], on_exhaust="rollback", rollback_to="x")
         tasks = {
-            "sg/x": {"status": "pass", "retries": 0, "pass_seq": 1, "checkpoint_seq": 0},
+            "sg/x": {
+                "status": "pass",
+                "retries": 0,
+                "pass_seq": 1,
+                "checkpoint_seq": 0,
+            },
             "sg/y": {"status": "fail", "retries": 1, "exhausted": True},
         }
-        status = {"provider": "dry", "seq": 1, "rollbacks_used": 0,
-                  "tasks": tasks, "rollback_pending": {"from": "sg/y", "to": "sg/x"}}
+        status = {
+            "provider": "dry",
+            "seq": 1,
+            "rollbacks_used": 0,
+            "tasks": tasks,
+            "rollback_pending": {"from": "sg/y", "to": "sg/x"},
+        }
         status_path = wr / "status.json"
         status_path.write_text(json.dumps(status))
-        graph = ([(x, "sg/x", []), (y, "sg/y", ["sg/x"])],
-                 {"sg": {"id": "sg", "task_type": "subgraph", "depends_on": []}},
-                 {"sg": [x, y]})
+        graph = (
+            [(x, "sg/x", []), (y, "sg/y", ["sg/x"])],
+            {"sg": {"id": "sg", "task_type": "subgraph", "depends_on": []}},
+            {"sg": [x, y]},
+        )
 
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertTrue(ckpt.is_dir())
         marker.write_text("changed-child\n")
         tasks["sg/x"].update(status="pass", pass_seq=2)
         tasks["sg/y"].update(status="fail", retries=1, exhausted=True)
         status["rollback_pending"] = {"from": "sg/y", "to": "sg/x"}
-        self.assertEqual(get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks), 0)
+        self.assertEqual(
+            get_task.execute_rollback(work_dir, status, str(status_path), graph, tasks),
+            0,
+        )
         self.assertEqual(marker.read_text(), "child-baseline\n")
 
     def test_checkpoint_targets_ignore_non_rollback_nodes(self):
@@ -782,17 +1060,25 @@ class OrchestratorTest(unittest.TestCase):
             marker.write_text("changed\n")
             get_task.create_checkpoints(wd, status, str(status_path), ["a"], {"a"})
 
-            self.assertEqual((workflow / "checkpoints" / "a" / "marker.txt").read_text(),
-                             "baseline\n")
+            self.assertEqual(
+                (workflow / "checkpoints" / "a" / "marker.txt").read_text(),
+                "baseline\n",
+            )
             self.assertEqual(status["tasks"]["a"]["checkpoint_seq"], 4)
 
     def test_get_task_creates_checkpoint_without_orchestrator(self):
-        nodes = [_node("a"), _node("b", depends_on=["a"],
-                                  on_exhaust="rollback", rollback_to="a")]
-        wd, wf, wr = self._legacy_work_dir(nodes, {
-            "a": {"status": "pending", "retries": 0},
-            "b": {"status": "pending", "retries": 0},
-        }, seq=0)
+        nodes = [
+            _node("a"),
+            _node("b", depends_on=["a"], on_exhaust="rollback", rollback_to="a"),
+        ]
+        wd, wf, wr = self._legacy_work_dir(
+            nodes,
+            {
+                "a": {"status": "pending", "retries": 0},
+                "b": {"status": "pending", "retries": 0},
+            },
+            seq=0,
+        )
         marker = Path(wd) / "marker.txt"
         marker.write_text("original")
         first = self._poll_advice(wd)
@@ -810,15 +1096,26 @@ class OrchestratorTest(unittest.TestCase):
 class BuildPromptTest(unittest.TestCase):
     """get_task.build_prompt 的白盒单测（纯函数；orchestrator 本体仍是黑盒）。"""
 
-    NODE = {"id": "a", "title": "t", "goal": ["g"], "approach": ["ap"],
-            "acceptance": ["ac"], "out_of_scope": ["o"]}
+    NODE = {
+        "id": "a",
+        "title": "t",
+        "goal": ["g"],
+        "approach": ["ap"],
+        "acceptance": ["ac"],
+        "out_of_scope": ["o"],
+    }
 
     def test_execute_prompt_includes_advice(self):
         with tempfile.TemporaryDirectory() as wd:
             advice = Path(wd) / "advice.md"
             advice.write_text("Investigate the original failure before retrying.")
-            p = get_task.build_prompt(self.NODE, "execute", wd, "/up",
-                                      get_task.PromptContext(advice=str(advice)))
+            p = get_task.build_prompt(
+                self.NODE,
+                "execute",
+                wd,
+                "/up",
+                get_task.PromptContext(advice=str(advice)),
+            )
             self.assertIn("Rollback-Advice:", p)
             self.assertIn(advice.read_text(), p)
 
@@ -829,15 +1126,23 @@ class BuildPromptTest(unittest.TestCase):
             verdict.write_text(json.dumps({"verdict": "fail", "reason": "报告未生成"}))
             reason = get_task.read_verdict_failure_reason(wd, "a")
             p = get_task.build_prompt(
-                self.NODE, "execute", wd, "/up",
-                get_task.PromptContext(failure_reason=reason))
+                self.NODE,
+                "execute",
+                wd,
+                "/up",
+                get_task.PromptContext(failure_reason=reason),
+            )
             self.assertIn("Previous-Verification-Failure:", p)
             self.assertIn("报告未生成", p)
 
     def test_verify_prompt_omits_verdict_failure_reason(self):
         p = get_task.build_prompt(
-            self.NODE, "verify", "/wd", "/up",
-            get_task.PromptContext(failure_reason="报告未生成"))
+            self.NODE,
+            "verify",
+            "/wd",
+            "/up",
+            get_task.PromptContext(failure_reason="报告未生成"),
+        )
         self.assertNotIn("Previous-Verification-Failure", p)
 
     def test_missing_or_non_fail_verdict_has_no_failure_reason(self):
@@ -851,8 +1156,13 @@ class BuildPromptTest(unittest.TestCase):
             self.assertIsNone(get_task.read_verdict_failure_reason(wd, "a"))
 
     def test_verify_prompt_omits_advice(self):
-        p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
-                                  get_task.PromptContext(advice="/wd/.workflow/advice/x.md"))
+        p = get_task.build_prompt(
+            self.NODE,
+            "verify",
+            "/wd",
+            "/up",
+            get_task.PromptContext(advice="/wd/.workflow/advice/x.md"),
+        )
         self.assertNotIn("Rollback-Advice", p)
 
     def test_prompt_without_advice_unchanged(self):
@@ -860,30 +1170,46 @@ class BuildPromptTest(unittest.TestCase):
         self.assertNotIn("Rollback-Advice", p)
 
     def test_execute_prompt_includes_system_prompt(self):
-        p = get_task.build_prompt(self.NODE, "execute", "/wd", "/up",
-                                  get_task.PromptContext(system_prompt="全局指令"))
+        p = get_task.build_prompt(
+            self.NODE,
+            "execute",
+            "/wd",
+            "/up",
+            get_task.PromptContext(system_prompt="全局指令"),
+        )
         self.assertIn("$SYSTEM_PROMPT=全局指令", p)
         self.assertIn("$WORK_DIR=/wd", p)
 
     def test_verify_prompt_includes_system_prompt(self):
-        p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
-                                  get_task.PromptContext(system_prompt="全局指令"))
+        p = get_task.build_prompt(
+            self.NODE,
+            "verify",
+            "/wd",
+            "/up",
+            get_task.PromptContext(system_prompt="全局指令"),
+        )
         self.assertIn("$SYSTEM_PROMPT=全局指令", p)
 
     def test_verify_prompt_embeds_verdict_commands(self):
         p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up")
         scripts = get_task.orch.SCRIPTS_DIR
-        self.assertIn('python3 "%s" --work-dir "/wd" --task-id "a"'
-                      % (scripts + "/verdict_pass.py"), p)
-        self.assertIn('python3 "%s" --work-dir "/wd" --task-id "a"'
-                      ' --reason "<why acceptance fails>"'
-                      % (scripts + "/verdict_fail.py"), p)
+        self.assertIn(
+            'python3 "%s" --work-dir "/wd" --task-id "a"'
+            % (scripts + "/verdict_pass.py"),
+            p,
+        )
+        self.assertIn(
+            'python3 "%s" --work-dir "/wd" --task-id "a"'
+            ' --reason "<why acceptance fails>"' % (scripts + "/verdict_fail.py"),
+            p,
+        )
         self.assertIn("The verdict file is required; a text reply is not a verdict.", p)
         self.assertNotIn("After verifying, reply with only", p)
 
     def test_verify_prompt_uses_namespaced_task_id(self):
-        p = get_task.build_prompt(self.NODE, "verify", "/wd", "/up",
-                                  get_task.PromptContext(task_id="sub/a"))
+        p = get_task.build_prompt(
+            self.NODE, "verify", "/wd", "/up", get_task.PromptContext(task_id="sub/a")
+        )
         self.assertIn('--task-id "sub/a"', p)
 
     def test_execute_prompt_has_no_verdict_commands(self):
@@ -900,17 +1226,34 @@ class BuildPromptTest(unittest.TestCase):
 class ValidateSystemPromptTest(unittest.TestCase):
     """validate_workflow 白盒校验顶层可选键 system_prompt。"""
 
-    BASE = {"workflow": "wf", "max_parallel": 1, "nodes": [
-        {"id": "a", "task_type": "normal", "title": "t", "goal": ["g"],
-         "approach": ["ap"], "acceptance": ["ac"], "out_of_scope": ["o"],
-         "depends_on": [], "executor": "e", "verifier": "v",
-         "max_retries": 0, "on_exhaust": "exit"}]}
+    BASE = {
+        "workflow": "wf",
+        "max_parallel": 1,
+        "nodes": [
+            {
+                "id": "a",
+                "task_type": "normal",
+                "title": "t",
+                "goal": ["g"],
+                "approach": ["ap"],
+                "acceptance": ["ac"],
+                "out_of_scope": ["o"],
+                "depends_on": [],
+                "executor": "e",
+                "verifier": "v",
+                "max_retries": 0,
+                "on_exhaust": "exit",
+            }
+        ],
+    }
 
     def test_absent_ok(self):
         self.assertIsNone(get_task.validate_workflow(self.BASE))
 
     def test_non_empty_str_ok(self):
-        self.assertIsNone(get_task.validate_workflow(dict(self.BASE, system_prompt="全局指令")))
+        self.assertIsNone(
+            get_task.validate_workflow(dict(self.BASE, system_prompt="全局指令"))
+        )
 
     def test_invalid_rejected(self):
         for bad in (123, ["x"], "", "   "):
@@ -930,8 +1273,8 @@ class VerdictFileTest(unittest.TestCase):
 
     def test_verdict_file_pass_with_non_compliant_text(self):
         code, out, wd = self._run(
-            nodes=[_node("t1")],
-            dry_replies={"t1": ["executed", "$VERDICT:pass"]})
+            nodes=[_node("t1")], dry_replies={"t1": ["executed", "$VERDICT:pass"]}
+        )
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
         verdicts = self._events(wd, "verdict")
@@ -943,7 +1286,8 @@ class VerdictFileTest(unittest.TestCase):
     def test_verdict_file_fail_with_reason(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],  # max_retries=0 → fail 即耗尽 → on_exhaust=exit
-            dry_replies={"t1": ["executed", "$VERDICT:fail:报告未生成"]})
+            dry_replies={"t1": ["executed", "$VERDICT:fail:报告未生成"]},
+        )
         self.assertEqual(code, 1, out)
         task = read_status(wd)["tasks"]["t1"]
         self.assertEqual(task["status"], "fail")
@@ -955,8 +1299,8 @@ class VerdictFileTest(unittest.TestCase):
 
     def test_missing_verdict_triggers_reverification(self):
         code, out, wd = self._run(
-            nodes=[_node("t1")],
-            dry_replies={"t1": ["executed", "通过"]})
+            nodes=[_node("t1")], dry_replies={"t1": ["executed", "通过"]}
+        )
         # 缺失裁决 → 滞留 verifying → reset 自愈重验证（dry 默认写 pass 裁决）。
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
@@ -966,35 +1310,44 @@ class VerdictFileTest(unittest.TestCase):
     def test_stale_verdict_file_cleared_on_dispatch(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],
-            pre_files={os.path.relpath(verdict_file_path("/", "t1"), "/"):
-                       '{"verdict": "fail"}\n'})
+            pre_files={
+                os.path.relpath(
+                    verdict_file_path("/", "t1"), "/"
+                ): '{"verdict": "fail"}\n'
+            },
+        )
         # 陈旧裁决文件先归档；dry 默认生成新的 pass 裁决。
         self.assertEqual(code, 0, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "pass")
-        self.assertEqual(json.loads(Path(verdict_file_path(wd, "t1")).read_text())["verdict"], "pass")
+        self.assertEqual(
+            json.loads(Path(verdict_file_path(wd, "t1")).read_text())["verdict"], "pass"
+        )
         history = Path(wd) / ".workflow" / "verdicts" / "history"
         archived = list(history.glob("t1.*.json"))
         self.assertEqual(len(archived), 1)
-        self.assertRegex(archived[0].name,
-                         r"^t1\.20[0-9]{6}T[0-9]{6}\.[0-9]{6}Z\.json$")
+        self.assertRegex(
+            archived[0].name, r"^t1\.20[0-9]{6}T[0-9]{6}\.[0-9]{6}Z\.json$"
+        )
         self.assertEqual(len(self._events(wd, "verdict")), 1)
 
     def test_verdict_archive_failure_stops_dispatch(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],
             pre_files={
-                os.path.relpath(verdict_file_path("/", "t1"), "/"):
-                    '{"verdict": "fail"}\n',
+                os.path.relpath(
+                    verdict_file_path("/", "t1"), "/"
+                ): '{"verdict": "fail"}\n',
                 ".workflow/verdicts/history": "not a directory\n",
-            })
+            },
+        )
         self.assertEqual(code, 2, out)
         self.assertIn("裁决文件归档失败", out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "executed")
 
     def test_invalid_verdict_token_fails_fast(self):
         code, out, _ = self._run(
-            nodes=[_node("t1")],
-            dry_replies={"t1": ["executed", "$VERDICT:bogus"]})
+            nodes=[_node("t1")], dry_replies={"t1": ["executed", "$VERDICT:bogus"]}
+        )
         # 非法 verdict 令牌属测试数据 bug，fail fast（与非法 $SLEEP 令牌同款语义）
         self.assertEqual(code, 2, out)
         self.assertIn("非法 verdict", out)
@@ -1002,7 +1355,8 @@ class VerdictFileTest(unittest.TestCase):
     def test_verdict_file_wins_over_contradictory_text(self):
         code, out, wd = self._run(
             nodes=[_node("t1")],
-            dry_replies={"t1": ["executed", "$VERDICT:fail:报告缺失|pass"]})
+            dry_replies={"t1": ["executed", "$VERDICT:fail:报告缺失|pass"]},
+        )
         # 文本谎称 pass，裁决文件为 fail：忽略文本，只消费裁决文件。
         self.assertEqual(code, 1, out)
         self.assertEqual(read_status(wd)["tasks"]["t1"]["status"], "fail")

@@ -46,6 +46,7 @@ python3 orchestrator.py --yaml <wf.yaml> --work-dir <dir> [--provider opencode]
 文本回复缺省模拟不合规的"通过/失败"，可用 "|文本" 覆盖）；未配置/耗尽的条目按阶段给默认回复
 （execute→executed，verify→写 pass 裁决文件）；普通文本不产生裁决。
 """
+
 import argparse
 import atexit
 import json
@@ -74,6 +75,7 @@ TERMINAL_RESULTS = ("[ALL TASK FINISHED]", "[STUCK]")  # get_task 终结裁决�
 
 class Provider(ABC):
     """无头调用 Coding Agent CLI；接入新 CLI（如 claude）= 继承本类 + 注册进 PROVIDERS。"""
+
     name = ""
 
     @abstractmethod
@@ -99,10 +101,16 @@ class ClaudeProvider(Provider):
     name = "claude"
 
     def build_command(self, agent, prompt):
-        return ["claude", "-p", prompt,
-                "--output-format", "json",
-                "--dangerously-skip-permissions",
-                "--agent", agent]
+        return [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--dangerously-skip-permissions",
+            "--agent",
+            agent,
+        ]
 
 
 class PiProvider(Provider):
@@ -117,12 +125,27 @@ class CodexProvider(Provider):
 
     def build_command(self, agent, prompt):
         # --skip-git-repo-check：work_dir 常非 git 仓库，不带此标志 codex 拒绝运行
-        return ["codex", "exec", "--json", "--ephemeral",
-                "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox", prompt]
+        return [
+            "codex",
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            prompt,
+        ]
 
 
-PROVIDERS = {p.name: p for p in (OpenCodeProvider(), CannbotProvider(), ClaudeProvider(), PiProvider(), CodexProvider())}
+PROVIDERS = {
+    p.name: p
+    for p in (
+        OpenCodeProvider(),
+        CannbotProvider(),
+        ClaudeProvider(),
+        PiProvider(),
+        CodexProvider(),
+    )
+}
 
 
 def err(msg):
@@ -131,13 +154,20 @@ def err(msg):
 
 
 def log_event(work_dir, **kv):
-    kv = dict(kv, timestamp=datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"))
-    with open(os.path.join(work_dir, ".workflow", "log.jsonl"), "a", encoding="utf-8") as f:
+    kv = dict(
+        kv,
+        timestamp=datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    with open(
+        os.path.join(work_dir, ".workflow", "log.jsonl"), "a", encoding="utf-8"
+    ) as f:
         f.write(json.dumps(kv, ensure_ascii=False) + "\n")
 
 
 def load_status(work_dir):
-    with open(os.path.join(work_dir, ".workflow", "status.json"), encoding="utf-8") as f:
+    with open(
+        os.path.join(work_dir, ".workflow", "status.json"), encoding="utf-8"
+    ) as f:
         return json.load(f)
 
 
@@ -191,7 +221,9 @@ def acquire_lock(work_dir):
 def reset_transient(work_dir):
     """瞬态重置（崩溃恢复 / [] 空轮自愈）：running→pending、verifying→executed。"""
     status = load_status(work_dir)
-    hits = [t for t in status["tasks"].values() if t["status"] in ("running", "verifying")]
+    hits = [
+        t for t in status["tasks"].values() if t["status"] in ("running", "verifying")
+    ]
     if not hits:
         return 0
     for t in hits:
@@ -220,8 +252,9 @@ def copy_tree(src, dst):
     for name in os.listdir(src):
         if name == WORKFLOW_DIR_NAME:
             continue
-        subprocess.run([CP, "-a", "--reflink=auto",
-                        os.path.join(src, name), dst + "/"], check=True)
+        subprocess.run(
+            [CP, "-a", "--reflink=auto", os.path.join(src, name), dst + "/"], check=True
+        )
 
 
 def clear_tree(path):
@@ -243,7 +276,7 @@ def dry_reply(dry_map, task_id, phase):
         r = str(seq.pop(0))
         if r.startswith(SLEEP_PREFIX):  # 模拟慢任务：睡眠后返回阶段默认回复
             try:
-                time.sleep(float(r[len(SLEEP_PREFIX):]))
+                time.sleep(float(r[len(SLEEP_PREFIX) :]))
             except (ValueError, OverflowError) as e:
                 # 非法令牌属测试数据 bug，fail fast：静默降级默认回复会让 UT 假通过
                 raise ValueError("非法 $SLEEP 令牌 %r: %s" % (r, e)) from e
@@ -254,14 +287,25 @@ def dry_reply(dry_map, task_id, phase):
 
 def update(work_dir, task_id, reply):
     return subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "update_status.py"), task_id, work_dir, reply],
-        capture_output=True, text=True)
+        [
+            sys.executable,
+            os.path.join(SCRIPTS_DIR, "update_status.py"),
+            task_id,
+            work_dir,
+            reply,
+        ],
+        capture_output=True,
+        text=True,
+    )
 
 
 def report(work_dir):
     status = load_status(work_dir)
     for tid, t in sorted(status["tasks"].items()):
-        print("[orchestrator]   %s: %s (retries=%d)" % (tid, t["status"], t.get("retries", 0)))
+        print(
+            "[orchestrator]   %s: %s (retries=%d)"
+            % (tid, t["status"], t.get("retries", 0))
+        )
 
 
 def run_agent(entry, provider, work_dir, dry_map):
@@ -271,22 +315,31 @@ def run_agent(entry, provider, work_dir, dry_map):
         if entry["_phase"] == "advice" and reply != CRASH:
             os.makedirs(os.path.dirname(entry["advice"]), exist_ok=True)
             with open(entry["advice"], "w", encoding="utf-8") as f:
-                f.write("# Rollback Advice (SIMULATED / dry-run)\n\n"
-                        "此文档由 dry-run 模拟生成，未执行真实失败分析。\n")
+                f.write(
+                    "# Rollback Advice (SIMULATED / dry-run)\n\n"
+                    "此文档由 dry-run 模拟生成，未执行真实失败分析。\n"
+                )
             reply = "advice-written"
         elif entry["_phase"] == "verify" and reply.startswith(VERDICT_PREFIX):
             # 模拟 verifier 调 verdict 回调脚本：写裁决文件；文本回复缺省模拟不合规自然语言，
             # "|文本" 可显式覆盖（如 "$VERDICT:fail:原因|pass" 模拟裁决文件与文本矛盾）
-            body, _, text = reply[len(VERDICT_PREFIX):].partition("|")
+            body, _, text = reply[len(VERDICT_PREFIX) :].partition("|")
             verdict, _, reason = body.partition(":")
-            write_verdict_file(work_dir, entry["task_id"], verdict.strip(),
-                          reason.strip() or None)
+            write_verdict_file(
+                work_dir, entry["task_id"], verdict.strip(), reason.strip() or None
+            )
             reply = text or ("通过" if verdict.strip() == "pass" else "失败")
         return reply, reply == CRASH
     path = session_path(work_dir, entry["task_id"], entry["_phase"])
-    with open(path, "wb") as f, subprocess.Popen(
+    with (
+        open(path, "wb") as f,
+        subprocess.Popen(
             provider.build_command(entry["agent"], entry["prompt"]),
-            cwd=work_dir, stdout=f, stderr=subprocess.PIPE) as p:
+            cwd=work_dir,
+            stdout=f,
+            stderr=subprocess.PIPE,
+        ) as p,
+    ):
         stderr = p.stderr.read().decode("utf-8", "replace")
         rc = p.wait()
     if rc != 0:  # 失败也存档：exit/stderr 追加在尾部，供排查基础设施故障
@@ -315,8 +368,13 @@ def finish_advice(work_dir, entry, crashed=False, error=None):
     if error:
         pending["error"] = error
         save_status(work_dir, status)
-    log_event(work_dir, event="advice", task_id=entry["task_id"],
-              result="error" if error else "ready", error=error)
+    log_event(
+        work_dir,
+        event="advice",
+        task_id=entry["task_id"],
+        result="error" if error else "ready",
+        error=error,
+    )
 
 
 def consume_verdict_file(work_dir, task_id):
@@ -361,8 +419,12 @@ def resolve_verdict_reply(work_dir, task_id):
     """仅使用有效裁决文件；缺失或非法时保持 verifying，等待重新验证。"""
     verdict = consume_verdict_file(work_dir, task_id)
     if not verdict:
-        log_event(work_dir, event="verdict_missing", task_id=task_id,
-                  reason="裁决文件缺失或非法，需要重新验证")
+        log_event(
+            work_dir,
+            event="verdict_missing",
+            task_id=task_id,
+            reason="裁决文件缺失或非法，需要重新验证",
+        )
         return ""
     word, reason = verdict
     event = {"event": "verdict", "task_id": task_id, "verdict": word}
@@ -400,8 +462,10 @@ def harvest_done(work_dir, inflight):
         if rc != 0:
             # 单任务更新失败不停机：可能因 agent 越权直改 status.json 等。
             # 记录后继续回收其余任务，交由下一轮调度重试/告警。
-            err("状态更新失败: %s (reply=%r)，跳过并继续"
-                % (entry["task_id"], reply[:200]))
+            err(
+                "状态更新失败: %s (reply=%r)，跳过并继续"
+                % (entry["task_id"], reply[:200])
+            )
 
 
 def terminal_exit(work_dir, verdict):
@@ -409,12 +473,17 @@ def terminal_exit(work_dir, verdict):
     skipped = verdict.get("skipped") or []
     reason = verdict.get("reason", "")
     if verdict["result"] == "[STUCK]":
-        msg, event, code = ("工作流卡住: %s" % reason,
-                            dict(event="stuck", reason=reason), 1)
+        msg, event, code = (
+            "工作流卡住: %s" % reason,
+            dict(event="stuck", reason=reason),
+            1,
+        )
     elif skipped:
-        msg, event, code = ("工作流部分完成（跳过: %s）" % ", ".join(skipped),
-                            dict(event="finish", result="partial",
-                                 skipped=skipped), 1)
+        msg, event, code = (
+            "工作流部分完成（跳过: %s）" % ", ".join(skipped),
+            dict(event="finish", result="partial", skipped=skipped),
+            1,
+        )
     else:
         msg, event, code = "工作流完成", dict(event="finish", result="ok"), 0
     print("[orchestrator] %s" % msg)
@@ -430,9 +499,9 @@ class LoopContext:
         self.work_dir = work_dir
         self.provider = provider
         self.dry_map = dry_map
-        self.executor = executor          # 常驻共享线程池
-        self.inflight = {}                # future → 派发条目
-        self.empty_rounds = 0             # 连续空轮计数（自愈 3 轮上限）
+        self.executor = executor  # 常驻共享线程池
+        self.inflight = {}  # future → 派发条目
+        self.empty_rounds = 0  # 连续空轮计数（自愈 3 轮上限）
 
 
 def ask_get_task(work_dir):
@@ -442,16 +511,22 @@ def ask_get_task(work_dir):
     """
     proc = subprocess.run(
         [sys.executable, os.path.join(SCRIPTS_DIR, "get_task.py"), work_dir],
-        capture_output=True, text=True)
+        capture_output=True,
+        text=True,
+    )
     if proc.returncode == 2:
         sys.stderr.write(proc.stderr)
         return None, 2
     try:
         out = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return None, err("get_task 输出无法解析: %r stderr=%r" % (proc.stdout, proc.stderr))
-    if not (isinstance(out, list)
-            or (isinstance(out, dict) and out.get("result") in TERMINAL_RESULTS)):
+        return None, err(
+            "get_task 输出无法解析: %r stderr=%r" % (proc.stdout, proc.stderr)
+        )
+    if not (
+        isinstance(out, list)
+        or (isinstance(out, dict) and out.get("result") in TERMINAL_RESULTS)
+    ):
         return None, err("get_task 输出无法解析: %r" % proc.stdout)
     return out, None
 
@@ -474,10 +549,7 @@ def dispatch_batch(ctx, batch):
             continue
         t = status["tasks"][entry["task_id"]]
         # 记阶段供 dry-run 默认回复与 session 存档：pending→execute、executed→verify
-        entry["_phase"] = (
-            "verify"
-            if t["status"] == "executed"
-            else "execute")
+        entry["_phase"] = "verify" if t["status"] == "executed" else "execute"
         if entry["_phase"] == "verify":
             if not clear_verdict_file(ctx.work_dir, entry["task_id"]):
                 return err("裁决文件归档失败: %s" % entry["task_id"])
@@ -487,8 +559,11 @@ def dispatch_batch(ctx, batch):
         if update(ctx.work_dir, entry["task_id"], "").returncode != 0:
             return err("任务状态预占失败: %s" % entry["task_id"])
     for entry in batch:
-        ctx.inflight[ctx.executor.submit(
-            run_agent, entry, ctx.provider, ctx.work_dir, ctx.dry_map)] = entry
+        ctx.inflight[
+            ctx.executor.submit(
+                run_agent, entry, ctx.provider, ctx.work_dir, ctx.dry_map
+            )
+        ] = entry
     return None
 
 
@@ -545,13 +620,17 @@ def loop_step(ctx):
 
 def loop(work_dir, provider, dry_map):
     max_parallel = read_max_parallel(work_dir)
-    if (not isinstance(max_parallel, int) or isinstance(max_parallel, bool)
-            or max_parallel < 1):
+    if (
+        not isinstance(max_parallel, int)
+        or isinstance(max_parallel, bool)
+        or max_parallel < 1
+    ):
         return err("无法从 workflow yaml 读取合法的 max_parallel")
 
     # 常驻共享池 + 全部轮间状态聚合进 ctx（仅主线程读写）
-    ctx = LoopContext(work_dir, provider, dry_map,
-                      ThreadPoolExecutor(max_workers=max_parallel))
+    ctx = LoopContext(
+        work_dir, provider, dry_map, ThreadPoolExecutor(max_workers=max_parallel)
+    )
     try:
         while True:
             exit_code = loop_step(ctx)
@@ -561,46 +640,84 @@ def loop(work_dir, provider, dry_map):
         ctx.executor.shutdown()
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="Workflow orchestrator")
-    parser.add_argument("--yaml", required=True, help="path to the workflow definition file")
-    parser.add_argument("--work-dir", required=True, help="working directory for all workflow artifacts")
-    parser.add_argument("--provider", choices=sorted(PROVIDERS), default=None,
-                        help="Coding Agent CLI used to execute the workflow's tasks")
-    parser.add_argument("--prompt", default=None, help="development task prompt (first run only)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="simulate agents from .workflow/dry_replies.json (UT only)")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--yaml", required=True, help="path to the workflow definition file"
+    )
+    parser.add_argument(
+        "--work-dir", required=True, help="working directory for all workflow artifacts"
+    )
+    parser.add_argument(
+        "--provider",
+        choices=sorted(PROVIDERS),
+        default=None,
+        help="Coding Agent CLI used to execute the workflow's tasks",
+    )
+    parser.add_argument(
+        "--prompt", default=None, help="development task prompt (first run only)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="simulate agents from .workflow/dry_replies.json (UT only)",
+    )
+    return parser.parse_args()
 
-    if not args.dry_run and not args.provider:
-        return err("必须提供 --provider（或用 --dry-run 模拟）")
-    if acquire_lock(args.work_dir) is None:
-        return err("另一个 orchestrator 实例正在运行（.workflow/orchestrator.lock），拒绝双跑")
+
+def prepare_workflow(args):
+    """Initialize or resume the workflow, returning its preparation exit code."""
     status_path = os.path.join(args.work_dir, ".workflow", "status.json")
 
     if os.path.exists(status_path):
         if args.prompt:
-            print("[orchestrator] 警告: 工作流已在执行中(%s 已存在)，"
-                  "--prompt 已被忽略，恢复执行时不应传递 prompt" % status_path, file=sys.stderr)
+            print(
+                "[orchestrator] 警告: 工作流已在执行中(%s 已存在)，"
+                "--prompt 已被忽略，恢复执行时不应传递 prompt" % status_path,
+                file=sys.stderr,
+            )
         try:
             reset_transient(args.work_dir)
         except (OSError, json.JSONDecodeError, KeyError) as e:
             return err("恢复失败: %s" % e)
     else:
         if not args.prompt:
-            print("[orchestrator] 错误: 工作流未初始化(%s 不存在)，"
-                  "首次运行必须提供 --prompt" % status_path, file=sys.stderr)
+            print(
+                "[orchestrator] 错误: 工作流未初始化(%s 不存在)，"
+                "首次运行必须提供 --prompt" % status_path,
+                file=sys.stderr,
+            )
             return 1
         print("[orchestrator] 初始化工作流: %s" % status_path)
-        rc = subprocess.run([
-            sys.executable, os.path.join(SCRIPTS_DIR, "init_status.py"),
-            "--yaml", args.yaml, "--work-dir", args.work_dir, "--prompt", args.prompt,
-        ]).returncode
+        rc = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(SCRIPTS_DIR, "init_status.py"),
+                "--yaml",
+                args.yaml,
+                "--work-dir",
+                args.work_dir,
+                "--prompt",
+                args.prompt,
+            ]
+        ).returncode
         if rc != 0:
             return rc
-        initial = load_status(args.work_dir)
-        initial["provider"] = args.provider or "dry"
-        save_status(args.work_dir, initial)
+
+    return 0
+
+
+def main():
+    args = parse_args()
+    if not args.dry_run and not args.provider:
+        return err("必须提供 --provider（或用 --dry-run 模拟）")
+    if acquire_lock(args.work_dir) is None:
+        return err(
+            "另一个 orchestrator 实例正在运行（.workflow/orchestrator.lock），拒绝双跑"
+        )
+    rc = prepare_workflow(args)
+    if rc != 0:
+        return rc
 
     dry_map = None
     if args.dry_run:
