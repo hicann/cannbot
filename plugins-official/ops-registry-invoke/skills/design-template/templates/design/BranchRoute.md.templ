@@ -1,0 +1,30 @@
+# 分支判定与场景覆盖
+
+> 生成规则（本段与所有 `>` 指引仅用于生成，不得保留在交付文档中）：
+> - 调用方/范式 skill 必须先提供范式资源定位器或内容；未提供时先请求该资源，不得凭记忆补规则。按其对应章节逐项产出，不适用项显式写 N/A 并说明原因。
+> - 从 TilingKey.md「TilingKey 模板划分」读取实际 tilingKey 值及对应 TPL_SEL 组合与分支语义；不预设 key 值、分支数量、分支名、rank 范围或 dtype。
+> - 跨文档引用只写同级文档名与节名，不写目录路径。
+> - 本节只写路由判定与覆盖契约，不复制分支实现、TilingData、Kernel 细节或 BranchCatalog 目录表。
+> - 覆盖矩阵只保留实际路由维度；固定维度不适用时保留并写 N/A，无其他路由维度时删除「其他路由维度」列。
+
+> 验收（本段不进入生成结果）：
+> - tilingKey 集与 TilingKey.md「TilingKey 模板划分」完全一致；BranchCatalog.md「分支设计目录」生成后也必须与该集合完全一致，无缺漏、重复或目录外 key。
+> - 路由表每个实际 tilingKey 恰好一行；分支名、进入条件和覆盖场景非占位，进入条件是可判定的谓词。
+> - 「对应 dtype 组合」精确覆盖 Interface.md「算子规格(受支持 dtype 组合)」中分配给本分支的每一行；只有确实为全集时才可写「全部」。
+> - 判定顺序覆盖合法输入域；任意两分支条件交集为空，或由明确先后短路规则消解。不支持/错误场景必须显式列为不路由。
+> - 覆盖矩阵覆盖每个受支持 dtype 组合与每个实际 tilingKey 至少一次；每个可路由等价类只映射一个 key，不适用维度显式写 N/A。
+
+1. **tilingKey 路由表**：
+
+   | tilingKey | 分支名 | 进入条件（shape / dtype / 对齐 / broadcast / rank 等） | 覆盖场景 | 对应 dtype 组合 |
+   |-----------|--------|------------------------------------------------------|----------|-----------------|
+   | `<key>` | `<branch-name>` | `<testable-entry-condition>` | `<covered-scenario>` | `<Interface.md「算子规格(受支持 dtype 组合)」中的具体组合；全部分配时写「全部」>` |
+
+2. **分支优先级与互斥**：
+   - 检查顺序：`<ordered-tilingKeys>`；首个命中即路由，后续分支不再评估。
+   - 不路由场景：`<unsupported-or-error-condition>`；无则写「无」。
+
+3. **场景覆盖矩阵**：dtype × shape × 对齐 × broadcast 的覆盖情况，确保 Interface.md「算子规格(受支持 dtype 组合)」中每个受支持组合至少落入一个分支。
+   | dtype 组合 | rank / shape 类别 | 对齐 | broadcast | 其他路由维度 | tilingKey |
+   |------------|-------------------|------|-----------|--------------|-----------|
+   | `<combination>` | `<rank-shape-class>` | `<alignment-or-N/A>` | `<broadcast-or-N/A>` | `<other-route-dim-or-N/A>` | `<key>` |

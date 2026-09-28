@@ -1,0 +1,24 @@
+# 迭代规划 (里程碑)
+
+> **生成规则（本段不进入生成结果）**：
+> - 拆成有序、依赖无环、可独立验收的里程碑；每个里程碑只覆盖一个可判定阶段，不合并测试与实现。
+> - 默认阶段为 TilingData 汇总结构体 → 公共 TilingUT → 公共 Tiling 实现 → 每 tilingKey 的 TilingUT → Tiling 实现 → Kernel 实现 → Kernel ST 执行 → 全量端到端验证。调用方确认依赖后可调整顺序，但不得把用例通过作为未实现阶段的基线。
+> - 为 `BranchCatalog.md`「分支设计目录」中的每个 tilingKey 生成各自阶段行；测试用例和期望先于对应实现，Kernel ST 执行在 Kernel 实现之后。
+> - 每行给出做什么、前置依赖和可判定的期望通过基线；基线引用 `Validation.md` 的对应章节或对应分支用例，不复制完整矩阵。
+> - 用 tilingKey 划分分支里程碑，不用 dtype、rank 或 shape 措辞替代。跨文档只使用同级文档名与章节名。
+
+| # | 里程碑 | 依赖 | 期望通过基线(用例子集/数量) |
+|---|--------|------|------------------------------|
+| 1 | TilingData 汇总结构体 | 无 | 结构体与 `TilingData.md` 契约一致，构建通过 |
+| 2 | 公共 TilingUT | 1 | 公共 TilingUT 按设计期望编译并执行到可判定结果 |
+| 3 | 公共 Tiling 实现 | 2 | 公共 TilingUT 全通过 |
+| 4 | Branch-`<key>` TilingUT | 3 | 该 tilingKey 的 TilingUT 按设计期望编译并执行到可判定结果 |
+| 5 | Branch-`<key>` Tiling 实现 | 4 | 该 tilingKey 的 TilingUT 全通过 |
+| 6 | Branch-`<key>` Kernel 实现 | 5 | 该 tilingKey 的首个 Kernel 用例编译、执行并通过精度判据 |
+| 7 | Branch-`<key>` Kernel ST 执行 | 6 | 该 tilingKey 的 Kernel ST 用例全通过 |
+| 8 | 全量端到端验证 | 全部分支里程碑 | `Validation.md`「端到端测试用例矩阵」全通过 |
+
+> **验收（本段不进入生成结果）**：
+> - 为每个 tilingKey 复制第 4–7 阶段，编号连续、依赖无环且不引用未定义里程碑。
+> - 每个阶段一行；不合并测试与实现；每行有非占位、可判定的通过基线。
+> - 不保留 `>` 指引、目录路径或未解析占位符。

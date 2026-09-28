@@ -1,0 +1,31 @@
+# {OP} 设计文档索引
+
+> 生成契约（本段不进入交付文档）：
+> - 本文件是设计集导航；不补充设计、实现、约束、状态或评审内容。
+> - 标题只使用 `{OP}` 替换后的实际算子名；表格保持下表文档顺序，文件列只写同级 `<文档名>.md`。
+> - 不链接目录或带路径前缀；分支设计文件通过 BranchCatalog.md「分支设计目录」的「设计文件」列定位。
+> - 交叉引用使用 `<文档名>.md「<章节标题>」`；引用其他文档的既有事实，不复制完整矩阵或表。
+> - 文档名和章节标题必须与设计集实际内容一致；不在索引内补充文档内容。
+
+| 标题 | 文件 |
+|------|------|
+| Overview | [Overview.md](Overview.md) |
+| Interface | [Interface.md](Interface.md) |
+| Shape 与 DataType 推导 | [InferShapeDtype.md](InferShapeDtype.md) |
+| 端到端验证 | [Validation.md](Validation.md) |
+| 开发视图 | [DevView.md](DevView.md) |
+| TilingKey 模板划分 | [TilingKey.md](TilingKey.md) |
+| TilingData 汇总结构体 | [TilingData.md](TilingData.md) |
+| 分支判定与场景覆盖 | [BranchRoute.md](BranchRoute.md) |
+| Host 侧 Tiling 方案 | [HostTiling.md](HostTiling.md) |
+| Kernel 侧计算方案 | [Kernel.md](Kernel.md) |
+| API 映射、验证与内存管理 | [API.md](API.md) |
+| 分支设计目录 | [BranchCatalog.md](BranchCatalog.md) |
+| 迭代规划 | [IterationPlan.md](IterationPlan.md) |
+
+> 验收（本段不进入交付文档）：
+> - 只有本标题作为一级标题；表格为唯一索引主体，无额外段落。
+> - 表格只含上表各文档，不新增、删除或合并行。
+> - 每个链接目标都是同级 `<文档名>.md`，不存在目录链接、绝对路径、路径前缀或 `{OP}` 残留。
+> - 交叉引用均指向同级文档的既存章节，无未定义章节或编造内容。
+> - 没有以 `>` 开头的生成契约或验收段落。

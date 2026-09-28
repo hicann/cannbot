@@ -1,0 +1,72 @@
+# Interface
+
+> 只使用调用方/范式 skill 提供的算子事实；缺失事实时向调用方请求，禁止推断。全文验收：所有受支持 dtype 组合、format、optional IO、attr 和 SOC 都已覆盖，且没有未处理指引或外部路径。
+
+## 算子原型
+- **ATen IR**：填写调用方提供的对标 ATen 签名；无对标关系时写 `无`。
+- **Inputs / Outputs**：按声明顺序逐项列出 name、语义、shape 约定、是否可选；可选项写省略时的行为。
+- **Attrs**：按声明顺序逐项列出 name、类型、语义、是否必选、默认值。
+> 本节是接口唯一契约。下游 Proto 文档在本节之后生成，须与本节一致；冲突时以本节为准。
+
+## 算子规格(受支持 dtype 组合)
+> 表头按 Inputs、Outputs 声明顺序排列。每行是一个受支持的 dtype 组合；可选输入未提供时写 `omitted`。完整枚举所有组合，禁止添加规格之外的组合。
+
+## 数据 Format 支持
+> 逐 IO 列出受支持 format；所有 IO 相同才可汇总为一条。format 与 dtype/shape 有耦合时，在「约束与限制」写明规则。
+
+## 约束与限制
+> - **shape**：rank 范围、单轴范围、标量/0D/空 tensor/动态 shape 规则。
+> - **dtype**：仅允许「算子规格」列出的组合；写出 dtype 一致性或耦合规则，没有则写 `无`。
+> - **format**：仅允许「数据 Format 支持」列出的 format；写出跨 IO 耦合规则，没有则写 `无`。
+> - **attr**：逐 attr 写值域、枚举、互斥/联动约束。
+> - **对齐**：元素或字节对齐要求，没有则写 `无`。
+> - **broadcast**：是否支持、哪些 IO 参与、维度如何对齐。
+> - **不支持场景**：写判定条件和处理策略（报错或兜底）。
+
+## OpDef 代码片段
+
+> 给出完整 `OpDef` 类体。按「算子原型」顺序声明每个 Input、Output、Attr；每个 IO 的 `DataType`、`Format`、`UnknownShapeFormat` 数组长度都等于「算子规格」组合数。参数类型、值依赖、contiguous 和 AICore flag 必须与「约束与限制」一致。kernel 入口 op 文件名由调用方/范式 skill 提供，不得臆造。
+
+```cpp
+namespace ops {
+class <Op> : public OpDef {
+public:
+    explicit <Op>(const char* name) : OpDef(name)
+    {
+        // Inputs：按「算子原型」声明；值依赖或 contiguous 仅在约束要求时添加。
+        this->Input("<in0>")
+            .ParamType(REQUIRED)
+            .DataType({<dt 组合0>, <dt 组合1>, ...})
+            .Format({<format 组合0>, <format 组合1>, ...})
+            .UnknownShapeFormat({<format 组合0>, <format 组合1>, ...});
+        this->Input("<optional_in>")
+            .ParamType(OPTIONAL)
+            .DataType({...})
+            .Format({...})
+            .UnknownShapeFormat({...});
+
+        // Outputs：同 Input 结构，按「算子原型」声明。
+        this->Output("<out0>")
+            .ParamType(REQUIRED)
+            .DataType({...})
+            .Format({...})
+            .UnknownShapeFormat({...});
+
+        // Attrs：选择匹配的类型 setter；OPTIONAL 提供默认值。
+        this->Attr("<attr>").AttrType(<REQUIRED|OPTIONAL>).<type setter>(<default-if-optional>);
+
+        // AICore：每个受支持 SOC 都调用 AddConfig；flag 按实际能力设置。
+        OpAICoreConfig aicoreConfig;
+        aicoreConfig
+            .<required flags>
+            .ExtendCfgInfo("opFile.value", "<caller-provided-op-file>");
+        this->AICore().AddConfig("<soc>", aicoreConfig);
+    }
+};
+OP_ADD(<Op>);
+} // namespace ops
+```
+
+### Inplace 算子特殊规则
+
+> 算子名含 `Inplace`，或调用方事实声明 output 复用 input 存储时适用本节。加载调用方/范式 skill 提供的 inplace 规则资源，按其规则生成 OpDef；inplace Output 与被复用 Input 同名。非 inplace 时写 `不适用`。

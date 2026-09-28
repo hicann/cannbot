@@ -1,0 +1,16 @@
+# Shape 与 DataType 推导 (InferShape / InferDataType)
+
+> **生成契约**：调用方/范式 skill 须提供算子规格、范式推断规则、动态 shape / 值依赖规则和 dtype 组合来源；禁止从本模板推断资源路径。缺失必需输入时，将受影响结论标为「待补」，并写明缺失输入。
+> **填充规则**：保留 `## InferShape` 和 `## InferDataType`。输出数量、输入输出属性、dtype 组合、format 和 rank 约束以 `Interface.md「算子原型」「算子规格(受支持 dtype 组合)」「数据 Format 支持」「约束与限制」` 为准。只写本算子的确定性推导规则；可选规则不适用时不写。跨文档引用只用同级文档名 + 章节名。
+> **验收**：每个输出都有完整 shape 和 dtype 推导结论；所有受支持的 dtype / format / rank / broadcast / dynamic shape 路径均有可执行公式或判定；失败或不支持路径不是静默回退；结论与 `Interface.md` 一致；无通用流程、`>` 指引或未填充占位符。
+
+## InferShape
+- 逐输出给出 shape 公式：来源维度 / 属性 / 输入张量值、各维计算、输出 rank 和输出 format 关系。
+- **broadcast**：轴对齐方向、每维结果、不同 rank 的对齐规则、可广播值与不可广播时的判定。
+- **DynamicShape**：输出若依赖属性或输入值，写明依赖项、读取时机、符号维度表示和注册期的确定性结论；不得把值依赖伪装成纯 shape 推导。
+- 边界：空 shape、标量、rank 上限/不等、非法维度或属性冲突的处理与失败判据。
+
+## InferDataType
+- 逐输出给出 dtype 公式：由哪个(些)输入 dtype 或属性决定；有多输入类型时写明确 promotion / 统一规则。
+- 覆盖 `Interface.md「算子规格(受支持 dtype 组合)」` 的每个组合；说明不组合到任何允许组合时的失败判据。
+- dtype 结论不得依赖未在 `Interface.md` 或调用方输入中声明的平台假设。
