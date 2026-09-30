@@ -1,0 +1,15 @@
+title: M7｜文档生成与补充
+goal:
+- 为最终算子实现补齐接口、构建、运行、约束和验证文档。
+approach:
+- 基于已通过验收的规格、设计、实现和测试证据编写文档，并标明环境与目标 SoC。
+- 将文档及其来源索引保存到 `$WORK_DIR/documentation/`；文档中的命令和路径须与交付代码一致。
+- 将本节点执行过程记录写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID；业务产物仍写入本任务约定的位置。
+procedure:
+- 核对文档覆盖适用范围、参数、边界、构建运行步骤和验证结果，且与当前实现一致。
+- 抽查文档中的命令和路径与交付代码真实对应。
+- 将验收结论与证据写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID。
+acceptance:
+- 'find "$WORK_DIR/documentation" -name "*.md" -size +0 | grep -q .'
+out_of_scope:
+- 不修改算子实现、测试用例或性能测量结果。

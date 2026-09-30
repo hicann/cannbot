@@ -1,0 +1,18 @@
+title: M6｜性能摸底与优化
+goal:
+- 在精度验证通过的实现上完成性能摸底，并在已确认性能目标范围内优化。
+approach:
+- 修改算子源码时，必须加载 `cannbot-dsl-best-practice` Skill，按其中的要求执行。
+- 运行结构用例时，将 `$WORK_DIR` 加入 `PYTHONPATH`，使用 `CANNBOTDSL_PROBE_MODULE=operators.<op>.probe.<op>_probe`，沿用冻结的探针事件断言。
+- 使用固定输入集记录优化前的设备性能、测试环境和原始测量结果。
+- 仅依据测量证据在冻结设计范围内修改实现，每次修改后回归受影响用例；最终采纳版本有变化时，运行冻结的黑盒、白盒与 TDD 全量设备回归，并复验声明的导出变体与 Native 产物命中，保存该版本证据。未采纳修改时复用原有效证据。
+- 将优化前后结果、命令、退出码及实现版本保存到 `$WORK_DIR/performance/`，汇总报告固定为 `$WORK_DIR/performance/performance-report.md`。
+- 将本节点执行过程记录写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID；业务产物仍写入本任务约定的位置。
+procedure:
+- 核对测量与回归报告可对应到同一输入集和实现版本，原始测量证据完整。
+- 核对最终采纳版本有完整设备回归证据，或与原有效证据的版本一致；性能结论有原始测量证据，且满足已确认的硬性目标。
+- 将验收结论与证据写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID。
+acceptance:
+- 'test -s "$WORK_DIR/performance/performance-report.md"'
+out_of_scope:
+- 不修改已冻结的规格、Golden、测试阈值或设计事实。

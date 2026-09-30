@@ -1,0 +1,18 @@
+title: 规格｜生成结构化算子规格
+goal:
+- 将已确认的需求转换为结构化算子规格。
+approach:
+- 必须加载 `ops-spec-gen` Skill，使用其非交互入口，按其中的要求执行。
+- 生成前必须读取该 Skill 的 category、paradigm 和 category-paradigm 映射注册表；范式分类在本节点完成并冻结，后续设计节点不得重新选择。
+- 读取需求分析节点的有效产物，生成算子接口、输入输出、属性、数据类型、shape、格式、约束、异常语义、精度标准和性能目标，以 `$WORK_DIR/design/doc` 作为生成器 `--output-dir`。
+- 依据已确认需求补齐规格并执行 Skill 的完整校验，保存命令、退出码和 findings；缺少依据或存在未决项时记录并终止，不补造事实。
+- 将本节点执行过程记录写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID；业务产物仍写入本任务约定的位置。
+procedure:
+- 审查执行者的完整校验记录，确认对应当前 spec 且返回 0；证据不足时退回补齐，不重跑同一校验代替执行者提供证据。
+- 逐项核对 `spec.yaml` 覆盖接口、输入、输出、属性、dtype、shape/格式约束、精度口径和异常边界。
+- 核对每条规格可追溯到 `$WORK_DIR/design/doc/REQUIREMENTS.md` 的已确认需求；不存在 TODO、会阻断黑盒设计或方案设计的未决项及相互冲突的约束。
+- 将验收结论与证据写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID。
+acceptance:
+- 'test -s "$WORK_DIR/design/doc/spec.yaml"'
+out_of_scope:
+- 不生成测试代码、CANNBotDSL 实现或设计方案。

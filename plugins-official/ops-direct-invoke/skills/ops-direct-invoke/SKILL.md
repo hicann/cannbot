@@ -5,23 +5,23 @@ description: 根据已确认的需求清单选择直调算子工作流模板，�
 
 # 直调算子开发
 
-本 Skill 根据脚本生成的引导文件选择引用模板，将 tasks 展开为完整 workflow YAML 后启动执行。每个 `tasks/<分类>/<步骤名>.yaml` 只收录节点的 9 个必填任务字段、可选 procedure 与按需声明的 variables，不包含 id、depends_on 或 max_retries。模板提供节点引用、依赖与下发时确定的重试次数；task 决定具体执行和验收内容。组装完成后，调度交给 harness。
+本 Skill 根据脚本生成的引导文件选择引用模板，将 tasks 展开为完整 workflow YAML 后启动执行。AscendC task 使用完整任务字段及按需声明的 variables；DSL task 使用下文规定的内容字段。两者均不包含 id、depends_on 或 max_retries。模板提供节点引用、依赖与下发时确定的重试次数；task 决定具体执行和验收内容。组装完成后，调度交给 harness。
 
 ## 启动前置条件
 
 本 Skill 接收调用方已对齐的需求清单 `work_dir/需求分析.md` 和 PM 从仓库级缓存复制的只读环境记录 `work_dir/环境信息.md`。启动前确认内容完整、无待决阻断项，且用户答复覆盖当前版本；已有有效清单与确认可直接复用。仓库级环境结果固定为 `<目标仓>/.cannbot/环境信息.md`，存在通过记录时直接复用，不因新算子重复校验；首次检查与缓存规则由调用方执行。
 
-需求分析与环境检查不属于 tasks。存在未答问卷或缺失信息时，将缺项报告给调用方，不组装或启动工作流，不用 silent 或默认选项代替用户拍板。
+需求问卷和用户确认在启动前完成；DSL 需求节点只整理已确认输入，环境节点检查本轮环境并生成 API 参考。存在未答问卷或缺失信息时，将缺项报告给调用方，不组装或启动工作流，不用 silent 或默认选项代替用户拍板。
 
 ## 运行输入
 
 沿用用户已经提供的目标代码仓绝对路径、算子名、原始需求、目标芯片、相关资料路径、已明确的架构选择与确认记录。把这些业务信息和已确认需求清单、环境检查记录的绝对路径、版本及确认摘要组织成传给 harness 的原始任务 prompt，不增加运行时私有输入文件或环境变量。任务提示中引用文件时使用绝对路径。
 
-确认 provider、work_dir 和所选 workflow 模板的绝对路径。缺少启动所需信息时先向用户询问。work_dir 必须设为目标仓下 `.cannbot/<任务名>/workflow<序号>/` 的绝对路径，目录由调用方按任务与执行轮次分配。除仓库级环境缓存与首次检查日志外，所有本轮开发中间产物（需求、设计、报告、日志、临时探针、构建临时文件和框架状态）必须放在此目录下；代码、测试和使用文档等算子交付件写入目标代码仓约定目录。使用独立工作目录及 checkout 隔离不同任务，避免覆盖已有运行。
+确认 provider、work_dir 和所选 workflow 模板的绝对路径。缺少启动所需信息时先向用户询问。work_dir 必须设为目标仓下 `.cannbot/<任务名>/workflow<序号>/` 的绝对路径，目录由调用方按任务与执行轮次分配。除仓库级环境缓存与首次检查日志外，所有本轮开发中间产物（需求、设计、报告、日志、临时探针、构建临时文件和框架状态）必须放在此目录下；AscendC 的代码、测试和使用文档等交付件写入目标代码仓约定目录；DSL 的本轮交付件按 task 写入 `$WORK_DIR/operators/`、`documentation/` 等目录，由 `DELIVERY.md` 提供索引。使用独立工作目录及 checkout 隔离不同任务，避免覆盖已有运行。
 
 工作流启动后不与 PM 或用户交互。各节点只使用已确认输入、固定 Skill 和本阶段下发清单，不发问卷、不等待答复，也不修改本轮 YAML。必要输入、确认或能力缺失时，executor 停止受阻操作，将证据写入本阶段报告并按 harness 原生执行协议结束；verifier 无法确认交付标准满足时判定失败，由 harness 按既定预算和耗尽策略处理。记录阻塞不代表交付通过。
 
-PM 仅在启动前确定输入与清单、整轮退出后读取结果并处理补充确认或下一轮编排。运行中可以只读观察日志、向用户汇报进度，不向节点补发指令。
+PM 仅在启动前确定输入与清单、整轮退出后读取结果并处理补充确认或下一轮编排。运行中遵循 `workflow-orchestrator` Skill 的状态轮询、进度原样转发和审批要求；除此之外保持静默，仅在异常、阻塞或用户询问时按需读取日志，不反复读取产物，不向节点补发指令。
 
 ## 先生成引导，再选择调度模板
 
@@ -29,17 +29,22 @@ PM 仅在启动前确定输入与清单、整轮退出后读取结果并处理�
 
 ```bash
 python3 scripts/generate_workflow_guide.py \
+  --language <ascendc|cannbot-dsl> \
   --output /absolute/operator-repo/.cannbot/abs/workflow1/workflow-guide.csv
 ```
 
 脚本递归扫描本 Skill 的 `workflows/` 下全部 `.yaml`、`.yml` 模板，与命令执行目录无关。输出 CSV 只有 `file`（相对 workflows/ 的模板路径）和 `use_when`（调用时机）两列；再次运行覆盖本轮引导，不修改共享模板。按 `file` 定位完整模板后再核对节点、变量及预算。选择后向用户说明模板名称及匹配理由；用户已授权且条件明确时无需额外审批。
 
+`--language` 取需求清单已确认的开发语言，只把扫描范围收窄到 `workflows/<语言>/`；`file` 列始终相对 `workflows/`，下游仍按同一路径定位模板。同一语言内继续按 `use_when` 选择具体模板。需求清单未确认开发语言时按缺失信息处理，不组装或启动工作流。
+
 每个可复用 workflow 模板第二行声明 `use_when`，例如 `use_when: 一般算子开发任务`。调用时机只在模板中维护，不另存注册表；生成引导时要求其为非空字符串。该字段仅用于选择模板，组装时移除，交给 harness 的完整 YAML 不包含它。
 
-`tasks/` 保留 `ascendc/` 和 `common/`；`workflows/` 当前只保留 `ascendc/`。文档模板直接存放在 `templates/`。
+`tasks/` 保留 `ascendc/`, `cannbot-dsl` 和 `common/`；`workflows/` 按开发语言分为 `ascendc/` 与 `cannbot-dsl/`。文档模板直接存放在 `templates/`。
 
-当前包含 [basic](workflows/ascendc/basic.yaml)（正式开发）和 [feasibility](workflows/ascendc/feasibility.yaml)（独立技术穿刺）。PM 在需求确认与环境核对后，按证据选择：
+当前包含 [basic](workflows/ascendc/basic.yaml)（AscendC 正式开发流程）、[feasibility](workflows/ascendc/feasibility.yaml)（独立技术穿刺）和 [op-dev](workflows/cannbot-dsl/op-dev.yaml)（CANNBot-DSL 正式开发流程）。PM 在需求确认与环境核对后，按需求清单确认的开发语言与证据选择：
 
+- 开发语言为 CANNBot-DSL：启动 op-dev，不使用 ascendc 目录下的模板。
+- 开发语言为 Ascend C 直调：在 basic 与 feasibility 之间按下列证据选择。
 - 路线已有适用实现或有效设备证据、无关键技术疑点：启动 basic。
 - API 组合、目标芯片适配或关键端到端链路尚无运行证据：先独立启动 feasibility，不同时展开完整黑盒矩阵与测试工程。判断依据是技术缺口，不是算子名字或复杂程度标签。
 - 已知 Skill 规则冲突、必要权限或平台能力缺失：启动前先处理。不能靠穿刺绕过规则，也不能把资料调查通过当作路线验证通过。
@@ -66,7 +71,7 @@ basic 默认知识搜集与黑盒测试设计并行；两者通过后依次进�
 
 知识搜集可以记录有依据的 Skill 建议及适用节点、执行/验收阶段，供 PM 在整轮退出后编排下一轮时参考；本轮下游仍使用启动前绑定的清单，不从报告自动加载新增 Skill。资料不足时可先独立组织知识搜集；该节点只交付中立参考。关键路线需要实测时选择 feasibility，不能连续用资料调查替代编译和设备验证。节点可在已下发候选内按证据选择；清单外能力仅有帮助时记为建议，缺少它导致交付标准无法满足时记录阻塞并验收失败。
 
-**task 编写原则：具体流程步骤集中在 approach（执行）和 procedure（验收）；acceptance 只写简短的结果标准，明确交付件，不放资料读取、操作顺序、检查方法或异常处理。涉及文件交付件时，acceptance 先列 `test -s` 非空检查，再列内容与质量结果。** 固定报告使用明确的 `$WORK_DIR/<产出节点ID>-<文件名>`；源码、测试和使用文档沿用已确认的项目布局，其检查命令所需小写 shell 变量在 approach/procedure 中用实际绝对路径赋值，不新增 harness 输入字段。多文件交付逐文件检查，不能用目录或任意非空文件代替。共享 acceptance 只列执行者交付件与质量结果；验收报告不放入 executor 的交付清单。所有节点的 procedure 明确由 verifier 写入 `$WORK_DIR/<id>-验收报告.md` 后执行 `test -s`，通过、失败及阻塞均落盘。executor 不生成或等待验收报告；返工反馈由 harness 传递，按角色约定处理。
+**task 编写原则：goal 只写本节点要达成什么，保持简短，不含具体步骤、文件名或判定条件；approach 描述执行者如何产出交付件，可包含任务所需的功能验证、性能测试和环境探测，并保存完整原始证据，但不替验收者裁决自己的产出；procedure 是验收者的独立验收方法，交付件内容正确性与质量的检查方法、判定依据和不合格处理全部写在这里；验收者审查代码、原始结果和报告的真实性、完整性及版本对应关系，不重复运行执行者已完成的同批测试，证据不足时退回执行节点补齐；acceptance 是双方共同确认的交付件契约，只列交付件清单及可直接执行的存在性检查（如 `test -s`），不写内容正确性、质量标准、检查步骤或异常处理，与 procedure 不描述同一项检查。上游产物已由上游验收者验收通过，本节点直接使用，只确认存在且可读取，不做重复校验；使用中发现上游缺陷时按执行协议就地终止并说明，不补做上游验收。本节点发现的问题就地解决或就地终止，不得绕过或后移。** 固定报告按下文的语言目录约定命名；源码、测试和使用文档沿用已确认的项目布局，其检查命令所需小写 shell 变量在 approach/procedure 中用实际绝对路径赋值，不新增 harness 输入字段。多文件交付逐文件检查，不能用目录或任意非空文件代替。共享 acceptance 只列执行者交付件；验收报告不放入 executor 的交付清单。所有节点的 procedure 明确由 verifier 按对应语言的报告目录写入 `<id>-验收报告.md` 并检查非空，通过、失败及阻塞均落盘。executor 不生成或等待验收报告；返工反馈由 harness 传递，按角色约定处理。
 
 引用模板格式如下，第二行是调用场景；goal、approach、procedure、acceptance、角色及其它任务内容都从 task YAML 读取，不能复制进模板：
 
@@ -84,12 +89,20 @@ nodes:
 ```
 
 - 节点提供 id、yaml、depends_on、max_retries，可选 variables；max_retries 必须是非负整数，由下发方明确决定，不从 task 获取或隐式补默认值。
-- id 和 depends_on 使用字符串。节点 id 按最长依赖路径分层，单节点层使用数字，同层并行节点使用数字.分支序号；按编号排序。组装器生成 ID 并核对其与模板声明一致，发现重复、未知依赖、环或编号不符时拒绝生成。
+- id 和 depends_on 使用字符串。AscendC 引用模板的节点 id 按最长依赖路径分层，单节点层使用数字，同层并行节点使用数字.分支序号；按编号排序。组装器生成 ID 并核对其与模板声明一致，发现重复、未知依赖、环或编号不符时拒绝生成。
 - `scripts/assemble_workflow.py --template <引用模板路径> --output <本轮完整YAML路径>` 按模板文件的位置解析 task 路径，展开具体内容与报告编号。输出只包含 harness 标准字段，不包含 yaml 引用或 variables 声明。
 - PM 需修改预算、设置变量或省略文档节点时，将选中的引用图存为本轮 `workflow<序号>.template.yaml`，其中 task 路径转换为实际绝对路径，再调整本轮图并组装为 `workflow<序号>.yaml`。不修改已安装的共享模板或 task。
 - 脚本也接受按任意顺序提供的 task 文件位置，必须同时传 `--max-retries N` 为本次所有输入设置明确预算；不同节点预算和变量值用引用模板声明。默认顺序串行，`--depends-on N:M,K` 覆盖第 N 个输入的依赖，`N:` 表示无依赖，位置从 1 开始。重复 task 可出现在不同节点，产物编号分别展开。
-- task 的 procedure 若提供，必须为非空字符串列表。goal 写简短目标，approach 为执行步骤，procedure 为独立验收步骤，acceptance 为双方共享的结果标准。
+- task 的 procedure 若提供，必须为非空字符串列表。goal 写简短目标，approach 为执行步骤，procedure 为独立验收步骤，acceptance 为双方共享的交付件契约（只列交付件及存在性检查）。
 - 更新 task 后，无需手工同步模板正文；下次组装读取最新 task 内容。已经生成的运行 YAML 保持不变，避免改变正在执行或恢复中的流程。
+
+AscendC 过程报告写入 `$WORK_DIR/`；CANNBotDSL 执行与验收过程报告写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID，验收报告为 `<id>-验收报告.md`。DSL 业务产物按 task 指定目录保存；根目录承接本轮输入、工作流 YAML、引导文件、启动日志与交付入口。
+
+## cannbot-dsl 内容引用模板
+
+Skill 源路径统一在插件的 [plugin-sources.json](../../plugin-sources.json) 的 `skills` 列表维护；DSL 能力从 `vendor/cannbot-skills/community/ops/` 导入。安装器按目录名注册 Skill，task 与动态实现子图只引用其 `SKILL.md` 中的名称。迁移 Skill 时同步源路径和调用名称，并确认依赖仓版本已包含这些目录。
+
+[op-dev](workflows/cannbot-dsl/op-dev.yaml) 是完整工作流模板：节点 id、depends_on、executor、verifier、max_retries、on_exhaust、rollback_to 和 subgraph 节点全部留在模板中，语义 id 不参与重新编号；normal 节点通过 `yaml` 键引用 `tasks/cannbot-dsl/` 下的内容 task，task 只含 title、goal、approach、procedure（可选）、acceptance、out_of_scope 六个内容字段，不包含任何调度字段。组装时按模板文件位置解析 task 路径，将内容字段合并进节点后剥离 `yaml` 键；模板与 task 同时定义同一字段、task 缺字段或合并后出现未知字段都会拒绝组装。内容字段为空列表的节点在组装时输出 warning 列出待补字段，不阻断生成。
 - 所有组装输出都使用新文件，拒绝覆盖。恢复使用原完整 YAML 和 work_dir；新一轮使用新目录，保留前轮状态与证据。
 
 ## task 提示词变量
@@ -188,7 +201,7 @@ nodes:
 | 功能证据核对参考（verifier） | [功能验收报告](templates/功能验收报告.md) |
 | 代码检视报告 | [代码检视报告](templates/代码检视报告.md) |
 
-模板规定交付格式，验收标准在 task 的 acceptance 中。文档和报告按已组装 task 声明的带阶段 ID 的 $WORK_DIR 路径落盘，算子文档按仓内已有格式写入既定目录，无已有算子文档时不创建；需求清单由调用方维护。产物须与当前需求、实际代码和精度口径一致；知识草稿的假设、建议及后续实现调整须如实区分，问题及依据写入对应报告；超出当前任务范围的失效产物列明问题，不自行派发或批准继续。未开展的性能测量、回顾和经验总结不得填成已完成。
+模板规定交付格式，acceptance 列出交付件，procedure 定义内容验收方法。文档和报告按已组装 task 声明的带阶段 ID 的 $WORK_DIR 路径落盘，算子文档按仓内已有格式写入既定目录，无已有算子文档时不创建；需求清单由调用方维护。产物须与当前需求、实际代码和精度口径一致；知识草稿的假设、建议及后续实现调整须如实区分，问题及依据写入对应报告；超出当前任务范围的失效产物列明问题，不自行派发或批准继续。未开展的性能测量、回顾和经验总结不得填成已完成。
 
 ## 交给 harness 执行
 
@@ -227,10 +240,10 @@ python3 scripts/run_workflow.py \
 
 加 `--foreground` 可前台运行，直接输出 harness 日志并返回其退出码；加 `--dry-run` 透传原 harness 的模拟执行选项。启动脚本不自行重试或读写调度状态。
 
-每个普通节点先由 executor 执行，再由 verifier 按 acceptance 验收。harness 把 goal、acceptance 和 out_of_scope 发给两者，把 approach 仅发给 executor，把 procedure 仅发给 verifier。executor 据共享标准交付，负责构建与本阶段规定的测试范围（穿刺为代表用例，正式交付为全量），按测试执行模板保存命令、退出码、源码/测试/构建产物哈希、加载路径及逐用例原始结果。verifier 只读核对证据有效性及交付物质量，并独立检视代码；不重复构建或测试，不接受只有通过自述的证据。验收报告只由 verifier 交付。执行与验收结果遵循 harness 注入的当前协议；verifier 须按框架提示调用公开裁决命令，文本回复不能代替裁决；调度、同节点重试和耗尽处理均使用框架原生机制。
+每个普通节点先由 executor 执行，再由 verifier 核对 acceptance 交付件并按 procedure 审查内容与证据。harness 把 goal、acceptance 和 out_of_scope 发给两者，把 approach 仅发给 executor，把 procedure 仅发给 verifier。executor 据共享标准交付，负责构建与本阶段规定的测试范围（穿刺为代表用例，正式交付为全量），按测试执行模板保存命令、退出码、源码/测试/构建产物哈希、加载路径及逐用例原始结果。verifier 只读核对证据有效性及交付物质量，并独立检视代码；不重复构建或测试，不接受只有通过自述的证据。验收报告只由 verifier 交付。执行与验收结果遵循 harness 注入的当前协议；verifier 须按框架提示调用公开裁决命令，文本回复不能代替裁决；调度、同节点重试和耗尽处理均使用框架原生机制。
 
-整轮退出后，PM 读取日志、退出结果和真实产物，汇总已完成步骤及阻塞证据。交付目标未满足时，使用 workflow2 等新目录规划下一轮必要的修复与验收；前轮确认有效的输入可复制到本轮固定路径并记录来源，前轮状态不得复制或重置。Codex CLI 替身黑盒探测覆盖当前 harness 将裁决失败原因传给下一次 executor。失败摘要及完整报告路径随裁决回传，执行者可按引用读取详细意见；报告仍是普通任务产物，不参与调度状态。该测试不证明真实模型一定遵守读取指令。跨节点回退、下游失效及用户待答恢复仍无本流程已验证的契约，不另写状态机或调度脚本。
+整轮退出后，PM 读取日志、退出结果和真实产物，汇总已完成步骤及阻塞证据。交付目标未满足时，使用 workflow2 等新目录规划下一轮必要的修复与验收；前轮确认有效的输入可复制到本轮固定路径并记录来源，前轮状态不得复制或重置。Codex CLI 替身黑盒探测覆盖当前 harness 将裁决失败原因传给下一次 executor。失败摘要及完整报告路径随裁决回传，执行者可按引用读取详细意见；报告仍是普通任务产物，不参与调度状态。该测试不证明真实模型一定遵守读取指令。DSL 实现子图已声明集成、检视失败回滚至实现修复，调度与下游失效由 harness 处理。接口回归不证明真实 Agent 的回滚修复效果；用户待答恢复仍需通过公开协议处理，不另写状态机或调度脚本。
 
 入口由工作区 PM 在当前用户会话中承接；PM 不进入调度图。节点角色仅使用 ops-direct-invoke-architect（方案）、ops-direct-invoke-developer（代码、调试与文档）及 ops-direct-invoke-verifier（验收与检视）。角色信息由安装后的客户端角色配置和 executor/verifier 名称衔接，不在任务里额外要求读取 agents 文件。真实 provider 的角色和 Skill 加载仍需验证，模拟执行通过不代表角色权限或 NPU 实测通过。
 
-范围包含本地开发与交付；不包含性能采集、迭代、回归复核、性能验收、回顾、经验总结、PR、外部 CI 和合并。Skill 正文和参考资料只描述自身职责，不调用或路由到其他 Skill；跨 Skill 的组合由 Agent 或 task 的 approach/procedure 显式声明。
+范围以所选工作流为准：AscendC basic 包含本地开发与功能交付，DSL op-dev 还包含性能采集、优化与回归；均不包含 PR、外部 CI 和合并。Skill 正文和参考资料只描述自身职责，不调用或路由到其他 Skill；跨 Skill 的组合由 Agent 或 task 的 approach/procedure 显式声明。

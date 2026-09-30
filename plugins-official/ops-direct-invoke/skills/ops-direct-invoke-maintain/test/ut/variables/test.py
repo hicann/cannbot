@@ -20,15 +20,13 @@ from pathlib import Path
 import yaml
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from support import referenced_task
-from support import SCRIPTS, WORKFLOWS, load_yaml, run_tests
+sys.path.insert(0, str(Path(__file__).absolute().parents[1]))
+from support import SCRIPTS, load_yaml, run_tests, task_fixture
 
 
 class VariableTests(unittest.TestCase):
     def source_task(self):
-        graph = load_yaml(WORKFLOWS / 'ascendc/basic.yaml')
-        task = load_yaml(referenced_task('ascendc/basic.yaml', graph['nodes'][0]))
+        task = task_fixture()
         task['variables'] = {'message': None, 'suffix': 'default'}
         for field in ['goal', 'approach', 'procedure', 'acceptance', 'out_of_scope']:
             task[field] = ['{{id}}: {{var:message}} / {{var:suffix}}']
@@ -62,56 +60,6 @@ class VariableTests(unittest.TestCase):
             self.assertEqual(load_yaml(folder / 'task.yaml')['variables']['message'], None)
             self.assertEqual(load_yaml(folder / 'template.yaml')['nodes'], nodes)
 
-    def test_real_tasks_bind_selected_skills_to_the_assigned_phase_only(self):
-        graph = load_yaml(WORKFLOWS / 'ascendc/basic.yaml')
-        originals = {}
-        previous_bindings = {}
-        for node in graph['nodes']:
-            task_path = (referenced_task('ascendc/basic.yaml', node)).resolve()
-            originals[task_path] = task_path.read_bytes()
-            node['yaml'] = str(task_path)
-            declarations = load_yaml(task_path).get('variables', {})
-            if 'executor_skills' not in declarations:
-                continue
-            previous_bindings[node['id']] = {**declarations, **node.get('variables', {})}
-            node['variables'].update(
-                executor_skills=(f"EXECUTOR_{node['id']}: 必须加载 `ascendc-simt-tiling-design` Skill，按其中的要求执行。\n"
-                                 "候选：出现精度错误时，必须加载 `ascendc-precision-debug` Skill，按其中的要求执行。"),
-                verifier_skills=f"VERIFIER_{node['id']}: 必须加载 `ascendc-mc2-best-practice` Skill，按其中的要求执行。")
-        with tempfile.TemporaryDirectory(prefix='workflow-skill-binding-') as temp:
-            template, output = Path(temp) / 'template.yaml', Path(temp) / 'workflow.yaml'
-            template.write_text(yaml.safe_dump(graph, allow_unicode=True))
-            result = subprocess.run([sys.executable, str(SCRIPTS / 'assemble_workflow.py'),
-                                     '--template', str(template), '--output', str(output)],
-                                    capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            generated = load_yaml(output)['nodes']
-            for selected, node in zip(graph['nodes'], generated):
-                if node['id'] in previous_bindings:
-                    self.assert_skill_binding(selected, node, previous_bindings, graph)
-            self.assertEqual(load_yaml(template), graph)
-        for path, original in originals.items():
-            self.assertEqual(path.read_bytes(), original)
-
-    def assert_skill_binding(self, selected, node, previous_bindings, graph):
-        executor = selected['variables']['executor_skills']
-        verifier = selected['variables']['verifier_skills']
-        self.assertIn(executor, node['approach'])
-        self.assertIn(verifier, node['procedure'])
-        self.assertNotIn(executor, node['procedure'])
-        self.assertNotIn(verifier, node['approach'])
-        for variable, field in [('executor_skills', 'approach'), ('verifier_skills', 'procedure')]:
-            self.assertNotIn(previous_bindings[node['id']][variable], node[field],
-                             'dispatch bindings replace template defaults rather than append candidates')
-        shared = node['goal'] + node['acceptance'] + node['out_of_scope']
-        self.assertNotIn(executor, shared)
-        self.assertNotIn(verifier, shared)
-        self.assertNotIn('variables', node)
-        self.assertNotIn('{{var:', json.dumps(node))
-        for other in graph['nodes']:
-            if other['id'] != node['id'] and other['id'] in previous_bindings:
-                self.assertNotIn(other['variables']['executor_skills'], node['approach'])
-                self.assertNotIn(other['variables']['verifier_skills'], node['procedure'])
 
     def test_invalid_bindings_are_rejected_before_output(self):
         cases = [

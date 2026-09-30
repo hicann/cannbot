@@ -1,0 +1,18 @@
+title: R2｜代码检视
+goal:
+- 检视最终算子实现及相关测试、文档的一致性和可维护性。
+approach:
+- 必须加载 `cannbot-dsl-code-reviewer` Skill，按其中的要求执行 DSL 算子源码的可读性检视；本节点检视者必须实际读取算子代码，禁止仅凭规则文档示例下结论。
+- 对照 `spec.yaml`、`DESIGN.md`、Unit 设计与验收证据检查实现路径、边界、资源生命周期和同步处理。
+- 检视报告按工作流要求落盘 `$WORK_DIR/code-review/`；FAIL/SUSPICIOUS/待确认分级如实记录并引用真实代码行号与片段，语料外发现单独标注，禁止为凑结论强行判 FAIL。
+- 在 `$WORK_DIR/code-review/` 记录逐项发现、严重程度、定位和修复状态；阻断问题未闭合时按执行协议终止本节点。
+- 将本节点执行过程记录写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID；业务产物仍写入本任务约定的位置。
+procedure:
+- 核对检视报告逐项发现有真实代码行号与片段支撑，分级（FAIL/SUSPICIOUS/待确认）与证据匹配。
+- 核对所有阻断问题均已闭合，并有对应代码版本和回归证据。
+- 核对未通过放宽测试阈值、修改 Golden 或改写验收报告来消除问题。
+- 将验收结论与证据写入 `$WORK_DIR/.workflow/reports/`，文件名包含节点 ID。
+acceptance:
+- 'find "$WORK_DIR/code-review" -type f -size +0 | grep -q .'
+out_of_scope:
+- 不通过放宽测试阈值、修改 Golden 或改写验收报告来消除问题。

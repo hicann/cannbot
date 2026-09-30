@@ -185,12 +185,16 @@ test("repository maps every official plugin to the Skill submodule", () => {
 test("Claude marketplace matches the bundled official plugin manifests", () => {
   const marketplace = JSON.parse(readFileSync(join(repositoryRoot, ".claude-plugin", "marketplace.json"), "utf8"));
   const entries = new Map(marketplace.plugins.map((plugin) => [plugin.name, plugin]));
-  const gitlink = spawnSync("git", ["ls-tree", "HEAD", "vendor/cannbot-skills"], {
-    cwd: repositoryRoot,
+  const submodule = readFileSync(join(repositoryRoot, ".gitmodules"), "utf8");
+  const skillSourceUrl = submodule.match(/url = (https:\/\/[^\s]+cannbot-skills[^\s]*)/)?.[1];
+  const revision = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: join(repositoryRoot, "vendor", "cannbot-skills"),
     encoding: "utf8",
   });
-  assert.equal(gitlink.status, 0, gitlink.stderr);
-  const skillCommit = gitlink.stdout.trim().split(/\s+/)[2];
+  assert.equal(revision.status, 0, revision.stderr);
+  const skillCommit = revision.stdout.trim();
+  assert.ok(skillSourceUrl, "missing Skill submodule URL");
+  assert.match(skillCommit, /^[0-9a-f]{40}$/);
   const expectedPlugins = ["ascendc-st-design", "model-infer-optimize", "ops-direct-invoke"];
   // Only bundled plugins have manifests; source-only workflow entries are not packaged.
   const officialPlugins = marketplace.plugins.filter((plugin) =>
@@ -235,7 +239,7 @@ test("Claude marketplace matches the bundled official plugin manifests", () => {
       assert.equal(entry.category, "skills");
       assert.equal(entry.strict, false);
       assert.equal(entry.source.source, "git-subdir");
-      assert.equal(entry.source.url, "https://gitcode.com/cann/cannbot-skills.git");
+      assert.equal(entry.source.url, skillSourceUrl);
       assert.equal(entry.source.sha, skillCommit);
       return entry.skills.map((skill) => `${entry.source.path}/${skill.replace(/^\.\//, "")}`);
     });
@@ -329,7 +333,13 @@ for (const source of sources) {
       assert.equal(existsSync(join(target, ".cannbot", "permissions", "PM.js")), false);
       assert.equal(existsSync(join(target, ".cannbot", "settings.json")), false);
       const record = readPluginRecord(target, tool, "ops-direct-invoke");
-      assert.equal(record.skills.length, 31);
+      const configured = JSON.parse(readFileSync(join(repositoryRoot, "plugins-official", "ops-direct-invoke", "plugin-sources.json"), "utf8"));
+      const localSkills = readdirSync(join(repositoryRoot, "plugins-official", "ops-direct-invoke", "skills"))
+        .filter((name) => existsSync(join(repositoryRoot, "plugins-official", "ops-direct-invoke", "skills", name, "SKILL.md")));
+      assert.equal(record.skills.length, configured.skills.length + localSkills.length);
+      for (const name of ["cannbot-dsl-env-check", "cannbot-dsl-op-design", "cannbot-dsl-unit-planner", "cannbot-dsl-test-generator", "cannbot-dsl-best-practice", "cannbot-dsl-code-reviewer"]) {
+        assert.equal(existsSync(join(skillRoot(target, tool), name, "SKILL.md")), true, name);
+      }
       assert.equal(record.agents.length, 3);
       assert.equal(record.sourcePackage, sourcePackage);
       assert.equal(record.source.kind, source);
@@ -600,7 +610,8 @@ test("multiple plugins keep independent instructions and install records", () =>
   const instructions = readFileSync(join(first.target, "AGENTS.md"), "utf8");
   assert.equal(instructions.match(/<!-- cannbot:ops-direct-invoke:start -->/g)?.length, 1);
   assert.equal(instructions.match(/<!-- cannbot:model-infer-optimize:start -->/g)?.length, 1);
-  assert.match(instructions, /^# 工作区 PM$/m);
+  const directInvokeHeading = readFileSync(join(repositoryRoot, "plugins-official", "ops-direct-invoke", "AGENTS.md"), "utf8").split("\n")[0];
+  assert.ok(instructions.includes(directInvokeHeading));
   assert.match(instructions, /^# NPU 模型推理优化入口$/m);
 
   const registry = JSON.parse(readFileSync(join(first.target, ".dsh", "cannbot-plugin.json"), "utf8"));

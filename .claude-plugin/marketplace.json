@@ -1,6 +1,6 @@
 {
   "name": "cannbot",
-  "description": "CANNBot official plugins and their pinned Skill bundles for CANN and Ascend NPU development.",
+  "description": "CANNBot plugins and Skill bundles for CANN and Ascend NPU development.",
   "owner": {
     "name": "CANNBot",
     "url": "https://gitcode.com/cann/cannbot"
@@ -13,7 +13,7 @@
         "source": "git-subdir",
         "url": "https://gitcode.com/cann/cannbot-skills.git",
         "path": "ops",
-        "sha": "9ae606b331085597f05b67cfa165f2dcd3369a2e"
+        "sha": "a25ecb1cda6234d9a95493bf8c913f81b86b55a0"
       },
       "strict": false,
       "version": "1.0.5",
@@ -51,7 +51,7 @@
         "source": "git-subdir",
         "url": "https://gitcode.com/cann/cannbot-skills.git",
         "path": "infra",
-        "sha": "9ae606b331085597f05b67cfa165f2dcd3369a2e"
+        "sha": "a25ecb1cda6234d9a95493bf8c913f81b86b55a0"
       },
       "strict": false,
       "version": "1.1.0",
@@ -74,7 +74,7 @@
         "source": "git-subdir",
         "url": "https://gitcode.com/cann/cannbot-skills.git",
         "path": "ops",
-        "sha": "9ae606b331085597f05b67cfa165f2dcd3369a2e"
+        "sha": "a25ecb1cda6234d9a95493bf8c913f81b86b55a0"
       },
       "strict": false,
       "version": "1.0.0",
@@ -93,7 +93,7 @@
         "source": "git-subdir",
         "url": "https://gitcode.com/cann/cannbot-skills.git",
         "path": "model",
-        "sha": "9ae606b331085597f05b67cfa165f2dcd3369a2e"
+        "sha": "a25ecb1cda6234d9a95493bf8c913f81b86b55a0"
       },
       "strict": false,
       "version": "1.2.0",

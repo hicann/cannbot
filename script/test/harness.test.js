@@ -56,10 +56,10 @@ for (const source of ['repository', 'package']) {
       for (const name of ['workflow-doc-templates', 'direct-invoke-code', 'direct-invoke-runtime', 'ops-direct-invoke-workflow', 'plugin-pr-submit', 'plugin-perf-iteration', 'plugin-experience-summary', 'infra-gitcode-api']) {
         assert.equal(existsSync(join(skills, name)), false, name);
       }
-      for (const path of ['tasks/ascendc', 'tasks/common', 'workflows/ascendc']) {
+      for (const path of ['tasks/ascendc', 'tasks/common', 'workflows/ascendc', 'workflows/cannbot-dsl']) {
         assert.ok(lstatSync(join(skills, entry, path)).isDirectory(), path);
       }
-      for (const path of ['tasks/cannbot-dsl', 'workflows/cannbot-dsl', 'workflows/common', 'workflows/registry.csv']) {
+      for (const path of ['workflows/common', 'workflows/registry.csv']) {
         assert.equal(existsSync(join(skills, entry, path)), false, path);
       }
       const tasks = join(skills, entry, 'tasks/ascendc');
@@ -377,10 +377,10 @@ for (const foreground of [true, false]) {
     const prompt = "中文任务\n'quoted' \"double\" \\ $value $(printf unwanted) `printf unwanted`";
     const promptFile = join(box.root, 'original task.txt');
     writeFileSync(promptFile, prompt);
-    const expected = ['--yaml', workflow, '--work-dir', work, '--provider', 'fixture provider', '--prompt', prompt];
+    const expected = ['--yaml', workflow, '--work-dir', work, '--provider', 'fixture provider', '--prompt', prompt, '--dry-run'];
     const result = spawnSync('python3', [join(entryScripts, 'run_workflow.py'), '--yaml', workflow,
       '--work-dir', work, '--provider', 'fixture provider', '--harness-skill', harness,
-      '--prompt-file', promptFile, ...(foreground ? ['--foreground'] : [])], { encoding: 'utf8' });
+      '--prompt-file', promptFile, '--dry-run', ...(foreground ? ['--foreground'] : [])], { encoding: 'utf8' });
     if (foreground) {
       assert.equal(result.status, 7, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), expected);
@@ -435,7 +435,8 @@ test('discovered workflow templates reproduce from tasks and reference installed
   const guide = workflowGuide(root, box.root);
   assert.equal(new Set(guide.map((item) => item.file)).size, guide.length);
   assert.deepEqual(guide.map((item) => item.file).sort(),
-    readdirSync(join(root, 'workflows'), { recursive: true }).filter((name) => name.endsWith('.yaml')).sort());
+    readdirSync(join(root, 'workflows'), { recursive: true })
+      .filter((name) => name.endsWith('.yaml') && !name.endsWith('.graph-preview.yaml')).sort());
   for (const template of guide) {
     const output = join(box.root, template.file);
     const path = join(root, 'workflows', template.file);
@@ -444,12 +445,21 @@ test('discovered workflow templates reproduce from tasks and reference installed
       '--template', path], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     const expected = yamlValue(output);
+    // Complete workflows inline their task content: the freeze keeps the graph and drops use_when.
+    if (!reference.nodes.some((node) => 'yaml' in node)) {
+      const { use_when, ...frozen } = reference;
+      assert.equal(template.use_when, use_when);
+      assert.deepEqual(expected, frozen);
+      continue;
+    }
     assert.deepEqual(expected.nodes.map(({ id, depends_on, max_retries }) => ({ id, depends_on, max_retries })),
       reference.nodes.map(({ id, depends_on, max_retries }) => ({ id, depends_on, max_retries })));
     for (const [index, node] of expected.nodes.entries()) {
       const ref = reference.nodes[index];
-      assert.deepEqual(Object.keys(ref).filter((key) => key !== 'variables').sort(),
-        ['depends_on', 'id', 'max_retries', 'yaml']);
+      if (!('yaml' in ref)) {
+        assert.deepEqual(node, ref);
+        continue;
+      }
       const task = yamlValue(resolve(dirname(path), ref.yaml));
       assert.equal(task.max_retries, undefined);
       assert.deepEqual(node.goal, task.goal);

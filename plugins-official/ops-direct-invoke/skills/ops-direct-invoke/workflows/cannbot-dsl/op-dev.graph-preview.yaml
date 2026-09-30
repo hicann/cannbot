@@ -1,0 +1,18 @@
+# 只供 workflow-graph 展示运行时生成的子图，不传给 harness。
+subgraphs:
+  implementation-loop:
+    title: 实现与检视 Agent Loop
+    runtime_file: $WORK_DIR/.workflow/implementation-tasks.yaml
+    summary: 按原生 Unit 与 TDD/Golden 逐步实现，并遵循 cannbot-dsl-best-practice 生产代码规范；集成或检视失败回到修复节点，通过后进入全量精度测试。
+    note: 这里展示生成规则。真实 implement-Uxx 节点数量与依赖由原生 units/Uxx.yaml、testcase.csv 确定；test-generator 执行阶段生成并校验 implementation-tasks.yaml，验收通过后调度子图。回滚次数由主工作流 max_rollbacks 限制。
+    stages:
+    - title: implement-Uxx × N
+      description: 每个节点绑定原生 units/Uxx.yaml、TDD case、<op>_golden.py 与允许修改范围；按 cannbot-dsl-best-practice 生产代码规范实现，微模块知识按需读取，重叠写集串行。
+    - title: 单元 Red → Green
+      description: 新增能力先确认可信 Red 再实现 Green；重试复用有效 Red，已有能力提供复用与当前验证证据，并执行任务要求的回归。
+    - title: implementation-fix
+      description: 首轮核对实现与测试清单；回滚时根据集成或检视报告修复代码，不改冻结设计、Golden、TDD 断言或精度阈值。
+    - title: unit-integration ↩ implementation-fix
+      description: 汇合全部 Unit，实现全量单元 TDD、Golden、白盒及必要黑盒回归；失败回滚到 implementation-fix。
+    - title: implementation-review ↩ implementation-fix
+      description: 检视实现及完整测试证据；发现问题回滚到 implementation-fix，复验通过后 Agent Loop 才完成并进入全量精度测试。

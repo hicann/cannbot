@@ -24,7 +24,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--harness-skill', type=Path, help='override the shared harness Skill location')
     args = parser.parse_args()
-    root = Path(__file__).resolve().parent
+    sys.dont_write_bytecode = True
+    root = Path(__file__).absolute().parent
     categories = sorted(path for path in root.iterdir()
                         if path.is_dir() and not path.name.startswith(('.', '_')))
     if not categories:
@@ -38,7 +39,7 @@ def main():
             LOGGER.error('Missing required test entry: %s', entry)
             failed.append(category.name)
             continue
-        command = [sys.executable, str(entry)]
+        command = [sys.executable, '-B', str(entry)]
         if args.harness_skill:
             command.extend(['--harness-skill', str(args.harness_skill.resolve())])
         try:
