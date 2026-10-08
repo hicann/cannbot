@@ -40,7 +40,11 @@ _HERE = Path(__file__).resolve()
 PLUGIN_ROOT = _HERE.parents[4]          # ascendc-port-orchestrator/
 REPO_ROOT = PLUGIN_ROOT.parents[1]      # cannbot repo root
 INIT_SH = PLUGIN_ROOT / "init.sh"
-OPS_ROOT = REPO_ROOT / "ops"
+# cannbot-skills checkouts keep the canonical shared ops Skills at the repository
+# root; the cann/cannbot repository carries the same tree as the
+# vendor/cannbot-skills submodule (initialized by the unified installer).
+OPS_ROOT_CANDIDATES = (REPO_ROOT / "ops", REPO_ROOT / "vendor" / "cannbot-skills" / "ops")
+OPS_ROOT = next((p for p in OPS_ROOT_CANDIDATES if p.is_dir()), OPS_ROOT_CANDIDATES[0])
 LOCAL_ROOT = PLUGIN_ROOT / "skills"
 
 

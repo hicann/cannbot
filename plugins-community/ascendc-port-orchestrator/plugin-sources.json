@@ -1,0 +1,12 @@
+{
+  "skillsRepository": "vendor/cannbot-skills",
+  "skillInstallMode": "symlink",
+  "skills": [
+    "ops/ascendc-api-best-practices",
+    "ops/ascendc-cross-gen-port-light",
+    "ops/ascendc-docs-search",
+    "ops/ascendc-regbase-best-practice",
+    "ops/ascendc-simt-best-practices",
+    "ops/ops-precision-standard"
+  ]
+}
