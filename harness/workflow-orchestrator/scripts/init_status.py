@@ -13,12 +13,14 @@ python3 init_status.py --yaml <workflow.yaml> --work-dir <work directory> --prom
 
 在 $WORK_DIR/.workflow/ 下创建：
 - status.json    任务状态表（契约：workflow/work_dir/user_prompt/seq/rollbacks_used/tasks；
-                  只记 normal 任务 id，subgraph 容器不注册——分组不是任务，
+                  只记 normal 任务 id，subgraph 节点不注册——分组不是任务，
                   状态由调度脚本从子任务实时聚合；任务定义由调度脚本从 yaml 读取；
+                  subgraph_members 保存子图直接成员关系（不保存子图节点状态）；
                   user_prompt 指向 user_prompt.md 的绝对路径）
 - user_prompt.md 本次开发任务的 prompt 原文
 - log.jsonl      事件日志（首条 init 记录）
 """
+
 import argparse
 import json
 import os
@@ -44,6 +46,7 @@ def _persist_initial_status(wf_dir, status_path, args, config, entries):
         "seq": 0,
         "rollbacks_used": 0,
         "tasks": entries,
+        "subgraph_members": {},
     }
     tmp = status_path + ".tmp"  # 原子写：写半截崩溃不会留下半截 status.json
     with open(tmp, "w", encoding="utf-8") as f:
@@ -53,12 +56,20 @@ def _persist_initial_status(wf_dir, status_path, args, config, entries):
     with open(os.path.join(wf_dir, "user_prompt.md"), "w", encoding="utf-8") as f:
         f.write(args.prompt + "\n")
     with open(os.path.join(wf_dir, "log.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "timestamp": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-            "event": "init",
-            "workflow": config.get("workflow", ""),
-            "tasks": len(entries),
-        }, ensure_ascii=False) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "timestamp": datetime.now(timezone.utc)
+                    .astimezone()
+                    .strftime("%Y-%m-%d %H:%M:%S"),
+                    "event": "init",
+                    "workflow": config.get("workflow", ""),
+                    "tasks": len(entries),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
 
 def main():
@@ -72,10 +83,15 @@ def main():
     status_path = os.path.join(wf_dir, "status.json")
 
     if not os.path.isfile(args.yaml):
-        print("[init_status] 错误: workflow yaml 不存在: %s" % args.yaml, file=sys.stderr)
+        print(
+            "[init_status] 错误: workflow yaml 不存在: %s" % args.yaml, file=sys.stderr
+        )
         return 1
     if os.path.exists(status_path):
-        print("[init_status] 错误: 工作流已初始化(%s 存在)，拒绝覆盖" % status_path, file=sys.stderr)
+        print(
+            "[init_status] 错误: 工作流已初始化(%s 存在)，拒绝覆盖" % status_path,
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -86,15 +102,23 @@ def main():
         return 1
 
     entries = {}
-    for n in (config.get("nodes") or []):
-        if not (isinstance(n, dict) and n.get("id") and n.get("task_type") != "subgraph"):
+    for n in config.get("nodes") or []:
+        if not (
+            isinstance(n, dict) and n.get("id") and n.get("task_type") != "subgraph"
+        ):
             continue
         e = {"status": "pending", "retries": 0}
         if n.get("require_approval"):
             e["require_approval"] = True
         entries[n["id"]] = e
-    if not entries:
-        print("[init_status] 错误: workflow yaml 中没有任务节点(nodes 为空)", file=sys.stderr)
+    if not entries and not any(
+        isinstance(n, dict) and n.get("task_type") == "subgraph"
+        for n in (config.get("nodes") or [])
+    ):
+        print(
+            "[init_status] 错误: workflow yaml 中没有任务节点(nodes 为空)",
+            file=sys.stderr,
+        )
         return 1
 
     _persist_initial_status(wf_dir, status_path, args, config, entries)

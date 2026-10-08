@@ -42,6 +42,7 @@ stdout 即本轮要展示给用户的文本（调用方原样转播，不做任�
 先写 stdout 再落状态：中途崩溃宁可下轮重播。无待审批任务时不加载 yaml
 （事件与进展只需 log/status，title/acceptance 才读 yaml）。
 """
+
 import argparse
 import json
 import logging
@@ -51,14 +52,20 @@ import sys
 import yaml
 
 import approve_task  # 复用审批文件路径的百分号编码
-import get_task      # 复用 yaml 契约校验与子图加载
+import get_task  # 复用 yaml 契约校验与子图加载
 
 STATE_NAME = "skill_poll.state"
-WINDOW = 5        # 任务窗口行数
-BAR_WIDTH = 20    # 进度条格数
-MARKERS = {"pass": "✓", "fail": "✗", "pending": "○",
-           "running": "▶", "executed": "▶", "verifying": "▶",
-           "awaiting_approval": "◉"}
+WINDOW = 5  # 任务窗口行数
+BAR_WIDTH = 20  # 进度条格数
+MARKERS = {
+    "pass": "✓",
+    "fail": "✗",
+    "pending": "○",
+    "running": "▶",
+    "executed": "▶",
+    "verifying": "▶",
+    "awaiting_approval": "◉",
+}
 ACTIVE = ("running", "executed", "verifying", "awaiting_approval")
 STATUS_LABELS = {"awaiting_approval": "待审批"}  # 其余状态名原样展示
 OUTPUT_LOGGER = logging.getLogger("poll_workflow.output")
@@ -116,14 +123,14 @@ def render_event(line):
         return "[%s] %s: 审批 %s%s" % (ts, tid, e.get("decision") or "?", suffix)
     if ev == "approval_ignored":
         reason = e.get("reason")
-        return "[%s] 审批被忽略：%s%s" % (
-            ts, tid, "（%s）" % reason if reason else "")
+        return "[%s] 审批被忽略：%s%s" % (ts, tid, "（%s）" % reason if reason else "")
     return None  # init/verdict/reset 等非关键事件不展示
 
 
 def _fmt_task(tid, st):
-    suffix = "（%s）" % STATUS_LABELS.get(st, st) \
-        if st in ACTIVE or st == "fail" else ""
+    suffix = (
+        "（%s）" % STATUS_LABELS.get(st, st) if st in ACTIVE or st == "fail" else ""
+    )
     return "%s %s%s" % (MARKERS.get(st, "?"), tid, suffix)
 
 
@@ -135,18 +142,23 @@ def render_progress(task_list):
     2 条）→ 进行中/待审批/失败（须关注，可挤占他段）→ 接下来待执行；
     各段截断处以 … 示意。无进行中且无待执行时（收尾/全部完成），窗口由已完成回填。
     """
-    completed = sorted((t for t in task_list if t[1] == "pass"),
-                       key=lambda t: t[2])
+    completed = sorted((t for t in task_list if t[1] == "pass"), key=lambda t: t[2])
     middle = [t for t in task_list if t[1] in ACTIVE or t[1] == "fail"]
     pending = [t for t in task_list if t[1] == "pending"]
     total = len(task_list)
     done = len(completed)
     filled = round(BAR_WIDTH * done / total) if total else 0
     head = "进展 %s%s %d%%（%d/%d）" % (
-        "█" * filled, "░" * (BAR_WIDTH - filled),
-        round(100 * done / total) if total else 0, done, total)
-    alerts = ["%s %d" % (STATUS_LABELS.get(s, s), sum(1 for _, x, _ in task_list if x == s))
-              for s in ("fail", "awaiting_approval")]
+        "█" * filled,
+        "░" * (BAR_WIDTH - filled),
+        round(100 * done / total) if total else 0,
+        done,
+        total,
+    )
+    alerts = [
+        "%s %d" % (STATUS_LABELS.get(s, s), sum(1 for _, x, _ in task_list if x == s))
+        for s in ("fail", "awaiting_approval")
+    ]
     alerts = [a for a in alerts if not a.endswith(" 0")]
     if alerts:
         head += "｜" + " · ".join(alerts)
@@ -185,8 +197,9 @@ class YamlGraph:
 
     def __init__(self, work_dir):
         self.work_dir = work_dir
-        self.node_by_id = None  # 顶层节点 id → 节点
-        self.sub_cache = {}     # 容器 id → {子任务 id: 节点}
+        self.node_by_id = None  # 完整节点 id → 已加载的节点
+        self.sub_cache = {}  # 完整子图节点 id → {局部子节点 id: 节点}
+        self.sub_paths = {}  # 完整子图节点 id → 已解析真实文件路径
 
     def load_main(self, status):
         """加载并校验主 yaml；通过返回 None，否则返回错误信息。"""
@@ -202,6 +215,8 @@ class YamlGraph:
         if err:
             return err
         self.node_by_id = {n["id"]: n for n in config["nodes"]}
+        self.sub_cache.clear()
+        self.sub_paths.clear()
         return None
 
     def load_sub(self, top):
@@ -209,32 +224,41 @@ class YamlGraph:
         if top in self.sub_cache:
             return self.sub_cache[top], None
         node = self.node_by_id[top]
-        fpath = node["file"] if os.path.isabs(node["file"]) \
+        fpath = (
+            node["file"]
+            if os.path.isabs(node["file"])
             else os.path.join(self.work_dir, node["file"])
+        )
+        real_path = os.path.realpath(fpath)
+        parent = top.rpartition("/")[0]
+        while parent:
+            if self.sub_paths.get(parent) == real_path:
+                return None, "子图 %s 文件循环引用: %s" % (top, fpath)
+            parent = parent.rpartition("/")[0]
         nodes, err = get_task.load_subgraph(fpath)
         if err:
             return None, "子图 %s 加载失败(%s): %s" % (top, fpath, err)
         self.sub_cache[top] = {c["id"]: c for c in nodes}
+        self.sub_paths[top] = real_path
+        self.node_by_id.update({top + "/" + c["id"]: c for c in nodes})
         return self.sub_cache[top], None
 
     def node_of(self, tid):
-        """任务 id → (yaml 节点, err)：顶层 normal 或子图子任务 parent/child。"""
-        node = self.node_by_id.get(tid)
-        if node is not None:
-            return node, None
-        if "/" not in tid:
-            return None, "任务 %s 在 yaml 中无对应节点" % tid
-        top, child = tid.split("/", 1)
-        top_node = self.node_by_id.get(top)
-        if top_node is None or top_node.get("task_type") != "subgraph":
-            return None, "任务 %s 在 yaml 中找不到所属子图" % tid
-        cmap, err = self.load_sub(top)
-        if err:
-            return None, err
-        node = cmap.get(child)
-        if node is None:
-            return None, "任务 %s 在子图 %s 中无对应节点" % (tid, top)
-        return node, None
+        """逐层解析完整任务 id，按需加载各层子图。"""
+        parts = tid.split("/")
+        for index in range(len(parts)):
+            current = "/".join(parts[: index + 1])
+            node = self.node_by_id.get(current)
+            if node is None:
+                return None, "任务 %s 在 yaml 中无对应节点: %s" % (tid, current)
+            if index == len(parts) - 1:
+                return node, None
+            if node.get("task_type") != "subgraph":
+                return None, "任务 %s 在 yaml 中找不到所属子图: %s" % (tid, current)
+            _, err = self.load_sub(current)
+            if err:
+                return None, err
+        return None, "任务 %s 在 yaml 中无对应节点" % tid
 
 
 def read_state(wf_dir):
@@ -320,10 +344,15 @@ def status_sections(wf_dir, fallback_work_dir):
     if not isinstance(tasks, dict):
         return [], "status.json 的 tasks 必须是 mapping"
     work_dir = status.get("work_dir") or os.path.abspath(fallback_work_dir)
-    task_list = [[tid, e.get("status"), int(e.get("pass_seq") or 0)]
-                 for tid, e in tasks.items() if isinstance(e, dict)]
+    task_list = [
+        [tid, e.get("status"), int(e.get("pass_seq") or 0)]
+        for tid, e in tasks.items()
+        if isinstance(e, dict)
+    ]
     sections = [render_progress(task_list)]  # 每轮输出，作心跳
-    blocks, err = approval_sections(status, work_dir, pending_approval_ids(tasks, work_dir))
+    blocks, err = approval_sections(
+        status, work_dir, pending_approval_ids(tasks, work_dir)
+    )
     if err:
         return [], err
     if blocks:
@@ -333,7 +362,8 @@ def status_sections(wf_dir, fallback_work_dir):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="轮询工作流状态（stdout 即待展示文本：事件/进展/待审批），只读")
+        description="轮询工作流状态（stdout 即待展示文本：事件/进展/待审批），只读"
+    )
     p.add_argument("--work-dir", required=True)
     args = p.parse_args(argv)
     wf_dir = os.path.join(args.work_dir, ".workflow")

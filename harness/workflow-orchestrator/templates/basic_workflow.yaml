@@ -39,7 +39,7 @@ nodes:                                  # Task nodes. depends_on edges drive exe
     on_exhaust: exit                    # "exit" | "continue" | "rollback". Budget exhausted: exit halts the workflow (exit 1); continue skips the node and its transitive dependents (partial finish, exit 1); rollback rolls back to the upstream node named by rollback_to (restores that node's checkpoint, generates an advice doc, redoes it and its downstream).
     # rollback_to: <node-id>            # str, optional. Required iff on_exhaust: rollback — must reference an existing normal node that is a transitive upstream of this node (subgraph children: within the same subgraph file). Ignored (no validation, no effect) when on_exhaust is not rollback.
 
-  - id: implement-op              
+  - id: implement-op
     task_type: normal      # Single-dependency node.
     title: Implement the add operator
     goal:
@@ -58,7 +58,7 @@ nodes:                                  # Task nodes. depends_on edges drive exe
     max_retries: 2
     on_exhaust: exit
 
-  - id: e2e-report              
+  - id: e2e-report
     task_type: normal        # Multi-dependency node. Nodes with disjoint deps dispatch in parallel.
     title: Run end-to-end validation and write the report
     goal:
@@ -107,5 +107,7 @@ nodes:                                  # Task nodes. depends_on edges drive exe
   - id: run-report-subgraph            # Subgraph node: exactly 4 keys, no executor/verifier/max_retries.
     task_type: subgraph                # "subgraph". When its deps pass, get_task.py materializes the child tasks
     file: report/report-sub-graph.yaml # str. Sub-workflow yaml (top-level key `nodes`), relative to work_dir; produced upstream, need not exist yet.
+                                      # Child nodes may be normal or subgraph, recursively. Every file path stays relative to work_dir.
+                                      # Only normal leaves enter status.json; full task IDs are parent/child/leaf.
     depends_on:
       - gen-report-subgraph

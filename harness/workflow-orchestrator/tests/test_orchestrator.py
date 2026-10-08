@@ -451,7 +451,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 2, out)
         self.assertIn("上游", out)
 
-    def test_rollback_to_subgraph_container_rejected(self):
+    def test_rollback_to_subgraph_node_rejected(self):
         nodes = [
             _node("a"),
             {
@@ -683,8 +683,8 @@ class OrchestratorTest(unittest.TestCase):
         # c 被重置后第二轮重跑时仍不创建 checkpoint：它不是 rollback 目标
         self.assertNotIn("checkpoint_seq", status["tasks"]["c"])
 
-    def test_rollback_resets_cross_container_continue(self):
-        # x2(continue 耗尽) 经容器 sg 才是 a 的传递下游 → 豁免失效，一并重置重跑
+    def test_rollback_resets_cross_subgraph_continue(self):
+        # x2(continue 耗尽) 经子图节点 sg 才是 a 的传递下游 → 豁免失效，一并重置重跑
         sub = {"nodes": [_node("k")]}
         nodes = [
             _node("a"),

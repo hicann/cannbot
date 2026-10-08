@@ -79,7 +79,7 @@ nodes:
 ### 顶层字段
 
 - `workflow`：工作流名称。
-- `max_parallel`：允许同时执行的任务数，必须是大于等于 1 的整数。
+- `max_parallel`：允许同时执行或验证的普通任务数，必须是大于等于 1 的整数；所有层级共用此限制。
 - `max_rollbacks`：允许的最大回滚次数，可选，默认值为 1。
 - `system_prompt`：可选的统一提示词。
 - `nodes`：任务节点列表，不能为空。
@@ -101,7 +101,7 @@ nodes:
 - `max_retries`：验证失败后的重试次数，必须大于等于 0。
 - `on_exhaust`：重试耗尽后的处理方式：`exit`、`continue` 或 `rollback`。
 - `rollback_to`：仅当 `on_exhaust: rollback` 时填写，指向同一节点集合中的传递上游普通任务。
-- `require_approval`：可选，bool 或非空 list[str]（确认提示），缺省不审批。配置后该任务验证通过进入待审批（`awaiting_approval`），由人工决定批准（解锁下游）/ 驳回重做（意见注入下一轮执行提示词）/ 终裁终止（走 `on_exhaust`）。`true` 为裸门禁；list[str] 形式在门禁之上附带审批检查点，任务进入待审批时展示给审批人（决定前该核对什么），提示实时从 yaml 读取，运行中修改立即生效。门禁标记在 init/子图物化时快照进 status.json，运行中修改 yaml 的门禁配置对已初始化任务不生效。
+- `require_approval`：可选。设为 `true` 时，任务验证通过后还需人工批准；也可填写非空字符串列表，列出审批时需要核对的事项。审批人可以批准、驳回重做并提供意见，或判定失败并按 `on_exhaust` 处理。默认不需要审批。请在运行前确定是否启用审批；运行中修改此设置不会影响已初始化的任务，但可以修改审批提示内容。
 
 ### 子图任务字段
 
@@ -115,7 +115,26 @@ nodes:
     - implement
 ```
 
-`file` 指向另一个包含 `nodes` 的 YAML 文件，可以填写绝对路径或相对于 `work_dir` 的路径。子图文件应只包含普通任务节点；子图容器不填写 `executor`、`verifier`、`max_retries` 或 `on_exhaust`。
+`file` 指向另一个仅包含顶层 `nodes` 的 YAML 文件，可以填写绝对路径或相对于 `work_dir` 的路径。子图文件可以同时包含普通任务和嵌套子图；子图节点不填写 `executor`、`verifier`、`max_retries` 或 `on_exhaust`。主工作流也可以只包含子图。
+
+例如，`details/workflow.yaml` 可以继续引用下一层子图：
+
+```yaml
+nodes:
+  - id: checks
+    task_type: subgraph
+    file: details/checks.yaml
+    depends_on: []
+```
+
+在 `details/checks.yaml` 的 `nodes` 中定义普通任务 `verify-result`，其完整任务 ID 就是 `run-details/checks/verify-result`。查看日志或审批该任务时，使用这个完整 ID。
+
+- 每一层 `file` 都相对于同一个 `work_dir`，不是相对于所在 YAML 文件的目录。
+- 每一层的 `depends_on` 和 `rollback_to` 都引用当前文件 `nodes` 中的局部 ID；`rollback_to` 仍须指向传递上游的普通任务。
+- 子图文件可以提前准备，也可以由上游任务生成；必须在子图依赖全部通过、即将开始执行前准备好。恢复运行时，请保留尚未完成的子图文件。
+- 子图内的所有任务（包括嵌套子图中的任务）通过后，才会执行依赖该子图的下游任务。
+- 任务配置 `on_exhaust: continue` 时，重试耗尽会跳过该任务及其依赖者，独立分支继续执行。若子图最终包含被跳过的任务，依赖该子图的下游任务也会被跳过。
+- 不同子图节点可以复用同一个文件，各自独立执行。不要沿嵌套路径循环引用同一文件，包括通过符号链接引用。
 
 ### 配置规则
 
