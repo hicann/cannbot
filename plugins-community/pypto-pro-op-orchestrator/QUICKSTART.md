@@ -1,152 +1,176 @@
-# pypto-pro-op-orchestrator 快速开始
+# PyPTO-Pro 算子开发与调优快速入门
 
-先准备 Node.js 20.11+、Agent 客户端与可用的 PyPTO-Pro 运行环境（CANN、设备运行时与
-测评环境由用户自行配置），详见 [环境要求](README.md#环境要求)。以下以 OpenCode 为例；
-使用 Codex 或 Claude Code 时，将命令中的 `opencode` 换成 `codex` 或 `claude`。
+`pypto-pro-op-orchestrator` 用于 PyPTO-Pro 算子的开发、精度验证、调试和性能调优。
 
-## 安装
+## 准备环境
 
-普通用户：在目标工作区用 npx 安装（推荐）：
+- Git 和 Python 3.10+。
+- 可用的昇腾 NPU，以及版本配套的 CANN、驱动、固件、PyTorch 和 `torch_npu`。
+- PyPTO 环境：优先使用 10 月 30 日后的源码编译版本；10 月 30 日前的版本可能存在兼容性问题，影响算子生成和性能。参考[源码仓库](https://gitcode.com/cann/pypto)和[编译安装指南](https://pypto.gitcode.com/install/build_and_install.html)。
+- 已安装并配置好所选客户端。
+
+## 安装与启动
+
+在算子开发环境的终端中进入项目目录；新项目可先创建工作区：
 
 ```bash
-cd /path/to/your-workspace
+mkdir -p pypto-workspace
+cd pypto-workspace
+```
+
+展开对应客户端，在当前工作区选择一种方式安装，然后启动客户端。
+
+<details>
+<summary>OpenCode</summary>
+
+需要 Node.js 20.11+；npm 方式还需 npm/npx。
+
+**npm 安装**
+
+```bash
 npx @cannbot-plugin/cannbot@latest install pypto-pro-op-orchestrator --tool opencode
 ```
 
-开发者：克隆源码后用 init 安装：
+**源码安装**
 
 ```bash
-git clone --recurse-submodules --shallow-submodules https://gitcode.com/cann/cannbot.git
-cd cannbot/plugins-community/pypto-pro-op-orchestrator
-bash init.sh project opencode /path/to/your-workspace
+git clone --recurse-submodules --shallow-submodules \
+  https://gitcode.com/cann/cannbot.git ../cannbot
+bash ../cannbot/plugins-community/pypto-pro-op-orchestrator/init.sh \
+  project opencode "$PWD"
 ```
 
-两种方式都是 project-scope 安装（init.sh 的 `project` 子命令即项目级），都会在安装时
-克隆 cannbot-skills 依赖仓，把 `pypto-pro-kernel` Skill 软链到项目
-`.agents/skills/pypto-pro-kernel/`，并把主 agent 提示词装配进项目根 `AGENTS.md`
-（claude 客户端为 `CLAUDE.md`），需要网络。详见 [安装](README.md#安装)。
+**启动**：运行 `opencode`。
 
-## 触发方式总览
+</details>
 
-安装后项目根 `AGENTS.md` 中的主 agent 提示词即生效，在已安装的工作区里边对话边开发
-即可：
+<details>
+<summary>Claude Code</summary>
 
-| 触发方式 | 适用场景 | 入口 |
-|---|---|---|
-| 方式一：自然语言对话（交互式客户端） | 在已安装插件的工作区里边对话边开发 | 项目根 `AGENTS.md` 主 agent 提示词 + `pypto-pro-kernel` Skill |
-| 方式二：无头（headless）调用 | 命令行 / CI 脚本化触发 | `opencode run "<提示词>"` |
+使用 npm 方式需要 Node.js 20.11+ 和 npm/npx。
 
-## 方式一：自然语言对话（交互式客户端）
+当前 npm 安装可能有 Skill 加载问题，优先使用源码方式。
 
-在已安装本插件的工作区启动客户端，直接对话即可：
+**npm 安装**
 
 ```bash
-cd /path/to/your-workspace
-opencode        # 或 cannbot 等工具
+npx @cannbot-plugin/cannbot@latest install pypto-pro-op-orchestrator --tool claude
 ```
 
-### 模板 1：极简提示词
-
-```text
-请生成一个 pypto-pro 实现的 sigmoid 算子
-```
-
-`pypto-pro` 关键词 + 算子开发意图即命中主 agent 的职责描述；主 agent 随后加载
-`pypto-pro-kernel` Skill 并按其技术流程执行，缺失的需求细节会在规划阶段向你澄清或
-按语义补定。
-
-### 可选补充：需求细化提示词
-
-极简提示词即可启动；需要显式约束时，在提示词中补充以下要素（格式不限，自然语言
-即可）：
-
-- 算子需求信息：算子语义 / 数学公式、输入输出的 name/shape/dtype、精度容差；
-- 性能目标：目标耗时（us）或相对 baseline 的加速比，以及调优轮次期望；
-- 性能采集方式要求：计时方法（如同一测量程序内 AB/BA、预热与重复次数）、设备与
-  设备锁要求、profiling 工具约束；
-- benchmark 测评要求：用指定 benchmark 框架/测评脚本做正确性与性能评测，明确
-  用例来源、通过判据与结果落盘位置。
-
-完整提示词模板样例（以 sigmoid 算子为例）：
-
-```text
-请生成一个 pypto-pro 实现的 sigmoid 算子。
-
-【算子需求信息】
-- 算子语义: out[i] = 1 / (1 + exp(-x[i]))，逐元素 sigmoid
-- 输入: input0, shape=[1024,1024], dtype=float32
-- 输出: output0, shape=[1024,1024], dtype=float32
-- 精度要求: 与 PyTorch 参考实现对比, rtol=1e-3, atol=1e-3
-
-【性能目标】
-- 目标耗时: <= 2.0 us（device_id=0，Ascend A5）
-- 调优期望: 多轮优化直至达标或论证硬件极限
-
-【性能采集方式要求】
-- 同一测量程序、同一进程内完成 AB/BA 对比，先预热再计时，取多次重复的最优/均值
-- 计时与 profiling 期间独占设备（遵守项目设备锁），数值错误的版本不参与性能比较
-
-【benchmark 测评要求】
-- 用 <benchmark 仓/脚本路径> 对本算子做正确性 + 性能评测
-- 正确性以全部用例 PASS 为准；性能以 benchmark 输出的实测耗时为准
-- 测评原始结果与报告落盘到 <结果目录>，并在交付说明中给出结论
-```
-
-### 多 agent 模式
-
-默认由主 agent 自主执行、按需调用 subagent。需要严格的多 agent 分工时，在提示词中
-显式开启：
-
-```text
-请生成一个 pypto-pro 实现的 sigmoid 算子。本次启用多 agent 模式。
-```
-
-主 agent 会先完整阅读 `multi-agent-workflow.md`，随后只做判定、派工和审核：写文件、
-跑命令、环境核对全部派给对应 subagent。仅解释、引用或否定该模式不会启用它；要求退出
-时主 agent 会先安全停止进行中的子任务再恢复默认执行方式。
-
-## 方式二：无头（headless）调用
-
-不进入交互会话，用客户端的 headless 形态在已安装的工作区直接给提示词：
+**源码安装**
 
 ```bash
-cd /path/to/your-workspace
-opencode run "请生成一个 pypto-pro 实现的 sigmoid 算子。<可选的需求细化要素，同方式一>"
+git clone --depth 1 https://gitcode.com/cann/pypto-gym.git ../pypto-gym
+bash ../pypto-gym/cannbot-skills/plugins-official/pypto-pro-op-orchestrator/init.sh \
+  project claude "$PWD"
 ```
 
-提示词写法与方式一完全相同（模板 1 / 完整模板均可）。多 agent 模式同样在提示词中
-显式声明开启。
+**启动**：运行 `claude`。
 
-## 触发后流程
+</details>
 
-1. 主 agent 加载 `pypto-pro-kernel` Skill（`.agents/skills/pypto-pro-kernel/`），
-   技术流程、执行顺序与验收条件以该 Skill 及其参考文档为准；
-2. 需求与验收梳理：缺失要素向你澄清或按语义补定，确定验收标准；
-3. 按 Skill 流程完成实现、正确性验证与性能优化；启用多 agent 模式时，上述具体工作
-   由 planner/coder/verifier/debugger/optimizer/tool 分工执行，主 agent 审核每步
-   返回后再派下一任务；
-4. 性能优化按轮推进：一轮一个连贯优化思路，含正确性检查与完整性能对比；不达标且
-   无提升空间时，按 Skill 要求给出硬件极限论证而非虚报达标；
-5. 交付：算子实现、测试与验证证据、性能数据与调优结论，落盘位置按 Skill 流程与
-   项目配置约定。
+<details>
+<summary>Codex</summary>
 
-## 产物说明
+需要 Node.js 20.11+；npm 方式还需 npm/npx。
 
-典型产物（具体目录以 `pypto-pro-kernel` Skill 与项目配置为准）：
+**npm 安装**
 
-- 算子 kernel 实现与调用/测试代码；
-- 正确性验证证据（与参考实现的对比结果、测试运行记录）；
-- 性能数据（计时原始结果、AB/BA 对比）与调优报告（含达标结论或硬件极限论证）；
-- benchmark 测评输出（若提示词要求）。
+```bash
+npx @cannbot-plugin/cannbot@latest install pypto-pro-op-orchestrator --tool codex
+```
 
-## 失败恢复与重跑
+**源码安装**
 
-- **会话中断**：重新打开客户端继续对话即可；主 agent 会基于已落盘的代码、验证记录
-  与摘要继续，不从头重做。
-- **单步失败**：原因已明确的修复交 coder；原因不明的先交 debugger 定位再修复复查；
-  验证失败不会由 verifier 自行改码。
-- **上下文接近阈值**（默认 384K tokens）：subagent 在安全点返回并说明交接；主 agent
-  审核后携摘要（需求、当前代码与基准版本、验证进度、未解决问题、剩余预算）开新
-  会话继续，实验历史与预算不重置。
-- **推倒重来**：明确告知主 agent 放弃当前候选；已验证的最佳版本可恢复，数值错误的
-  版本不参与性能比较。
+```bash
+git clone --recurse-submodules --shallow-submodules \
+  https://gitcode.com/cann/cannbot.git ../cannbot
+bash ../cannbot/plugins-community/pypto-pro-op-orchestrator/init.sh \
+  project codex "$PWD"
+```
+
+**启动**：运行 `codex`。
+
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+**源码安装**
+
+```bash
+git clone --depth 1 https://gitcode.com/cann/pypto-gym.git ../pypto-gym
+bash ../pypto-gym/cannbot-skills/plugins-official/pypto-pro-op-orchestrator/init.sh \
+  project cursor "$PWD"
+```
+
+**启动**：用 Cursor 打开工作区，进入 Agent 模式。
+
+</details>
+
+<details>
+<summary>CodeArts</summary>
+
+**源码安装**
+
+```bash
+git clone --depth 1 https://gitcode.com/cann/pypto-gym.git ../pypto-gym
+bash ../pypto-gym/cannbot-skills/plugins-official/pypto-pro-op-orchestrator/init.sh \
+  project codearts "$PWD"
+```
+
+**启动**：运行 `codearts`，或用 CodeArts IDE 打开工作区并进入智能体对话。
+
+</details>
+
+## 算子开发与调优
+
+### 算子开发
+
+```text
+请使用 PyPTO-Pro 开发一个 softmax 算子，完成精度验证和性能测试。
+
+输入：连续存储的二维 float16 张量，行数为 1～32，列数为 128～4096。
+功能：沿最后一维计算 softmax，支持尾块。
+输出：形状、数据类型和布局与输入相同。
+精度要求：与 CPU 上的 FP32 参考结果比较，rtol=1e-3，atol=1e-3。
+交付目录：./custom/softmax/。
+
+完成后列出交付文件，并说明测试结果、性能数据和使用方式。
+```
+
+可补充设备信息、参考实现、测试用例和性能目标。
+
+### 性能调优
+
+```text
+请优化 ./custom/softmax/ 中的 PyPTO-Pro 算子，
+沿用现有测试用例、精度标准和性能测量方式。
+
+完成后说明优化前后的性能、精度回归结果和交付位置。
+```
+
+### 可选模式
+
+- **多 agent 模式**：在提示词中加入“启用多 agent 模式”，由主 agent 协调子 agent 分工完成任务。
+- **Coverage 模式**：在提示词中加入“启用 coverage 模式，使用内置性能知识卡片”，检查已知优化方向并报告覆盖结果和未完成项。
+
+## 交付产物
+
+以下为 `pypto-gym` 的 Python/JIT 源码交付目录，以 `softmax` 为例：
+
+```text
+custom/softmax/
+├── README.md                    # 算子说明与调用方法
+├── DESIGN.md                    # 实现设计
+├── RESULTS.md                   # 用例、精度与性能结果
+├── op_kernel/
+│   └── softmax.py               # kernel 与公开调用入口
+└── tests/
+    ├── test_softmax.py          # 功能与精度测试
+    └── assets/
+        ├── gen_golden.py        # 参考数据生成
+        └── softmax_precision.py # 精度比较
+```
+
+如需保留现有目录或采用项目交付规范，请在提示词中说明。

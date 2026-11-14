@@ -6,8 +6,15 @@
       "ref": "master",
       "assets": {
         "plugin": ".",
-        "skills": { "dir": "community/ops", "names": ["pypto-pro-kernel"] }
-      }
+        "skills": {
+          "dir": "community/ops",
+          "names": [
+            "pypto-pro-kernel",
+            "pypto-pro-op-standard"
+          ]
+        }
+      },
+      "required": true
     }
   ]
 }

@@ -1,7 +1,6 @@
 # pypto-pro-op-orchestrator
 
-PyPTO-Pro 算子开发插件：在主会话中完成 PyPTO-Pro 算子的**开发、验证、调试与性能优化**，
-按需调度 6 个专职 subagent 分工协作，最终交付算子实现、验证证据与性能报告。
+面向 PyPTO-Pro 算子的开发、验证、调试、性能优化与交付，提供完整的算子开发工作流。
 安装与使用见 [QUICKSTART.md](QUICKSTART.md)。
 
 ## 功能概览
@@ -39,8 +38,8 @@ PyPTO-Pro 算子开发插件：在主会话中完成 PyPTO-Pro 算子的**开发
 请生成一个 pypto-pro 实现的 sigmoid 算子
 ```
 
-也支持命令行 headless 触发与显式开启多 agent 模式。提示词模板、需求细化要素与
-失败恢复见 [QUICKSTART.md](QUICKSTART.md)。
+也支持命令行 headless 触发与显式开启多 agent 模式。需求示例与可选模式见
+[QUICKSTART.md](QUICKSTART.md)。
 
 ## 安装
 
@@ -63,10 +62,10 @@ bash init.sh project opencode /path/to/your-workspace
 ```
 
 两种方式都是 project-scope 安装（init.sh 的 `project` 子命令即项目级），需要网络：
-安装时克隆 [cannbot-skills](https://gitcode.com/cann/cannbot-skills) 依赖仓，把
-`pypto-pro-kernel` Skill 软链到项目 `.agents/skills/pypto-pro-kernel/`（主 agent 对该
-Skill 的引用以此落点为准），并把主 agent 提示词装配进项目根 `AGENTS.md`（claude
-客户端为 `CLAUDE.md`）。最短操作步骤见 [QUICKSTART.md](QUICKSTART.md)。
+安装时克隆 [cannbot-skills](https://gitcode.com/cann/cannbot-skills)，并软链
+`pypto-pro-kernel` 和 `pypto-pro-op-standard` 到客户端的 Skill 目录。
+主 agent 提示词装配进项目根 `AGENTS.md`（Claude 客户端为 `CLAUDE.md`）。
+最短操作步骤见 [QUICKSTART.md](QUICKSTART.md)。
 
 ## 目录简介
 
