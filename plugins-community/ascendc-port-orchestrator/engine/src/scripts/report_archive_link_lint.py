@@ -90,7 +90,8 @@ def _tables(front):
 
 
 def lint(path):
-    lines = open(path, encoding="utf-8").read().splitlines()
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
     start, end = _front_region(lines)
     front = list(enumerate(lines))[start:end]
     misses = []
