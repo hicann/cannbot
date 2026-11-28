@@ -50,8 +50,26 @@ class StagedVerifyTest(unittest.TestCase):
         self.assertEqual(prepared["device_id"], 3)
         self.assertEqual(prepared["perf_target_us"], 12.5)
         self.assertEqual(prepared["tune_rounds"], 3)
+        self.assertEqual(prepared["tuning_mode"], "stepwise")
         # stdout 契约输出与 prepared_case.json 一致
         self.assertEqual(json.loads(r.stdout), prepared)
+
+    def test_explicit_panko_request_is_persisted_and_verified(self):
+        self._prewrite()
+        result = self._verify("--tuning-mode", "panko")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._prepared()["tuning_mode"], "panko")
+        self.assertEqual(self._verify("--tuning-mode", "panko").returncode, 0)
+        self.assertNotEqual(self._verify("--tuning-mode", "stepwise").returncode, 0)
+
+    def test_explicit_mode_binds_an_older_prepared_case(self):
+        self._prewrite()
+        self.assertEqual(self._verify().returncode, 0)
+        earlier = self._prepared()
+        del earlier["tuning_mode"]
+        (self.work_dir / "prepared_case.json").write_text(json.dumps(earlier))
+        self.assertEqual(self._verify("--tuning-mode", "panko").returncode, 0)
+        self.assertEqual(self._prepared(), {**earlier, "tuning_mode": "panko"})
 
     def test_staged_explicit_op_dir(self):
         self._prewrite()

@@ -295,7 +295,7 @@ export const PyptoStateTransitionPlugin: Plugin = async (input) => {
             ? "Stage 4 design-handoff"
             : "Stage completion";
       const guidance = action === "complete_phase" || action === "submit_for_verify"
-        ? "\n\nRecommended next step: re-dispatch pypto-op-coder for the same phase, " +
+        ? "\n\nRecommended next step: re-dispatch the kernel implementation task for the same phase, " +
           "instruct it to fix the violations listed above, and call complete_phase (or " +
           "submit_for_verify) again."
         : action === "submit_design"
@@ -356,6 +356,12 @@ export const PyptoStateTransitionPlugin: Plugin = async (input) => {
               `or the harness generic executor/verifier agent, but was called by "${callerAgent || "(unknown)"}". ` +
               `Subagents must not modify .orchestrator_state.json; return stage results to the orchestrator instead.`,
             );
+          }
+          if (callerAgent === "general-executor" || callerAgent === "general-verifier") {
+            const session = await client.session.get({ path: { id: context.sessionID }, query: { directory: baseDir } });
+            if (!session.data || session.data.parentID) {
+              throw new Error("permission denied: only the root workflow session may drive stage transitions");
+            }
           }
 
           const action = String(args.action) as TransitionAction;

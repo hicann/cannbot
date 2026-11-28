@@ -1,0 +1,38 @@
+# 两个入口共用的分步骤调优子图。
+nodes:
+  - id: stepwise
+    task_type: normal
+    title: Stage 7 分步骤调优与回归
+    goal:
+      - "按 stepwise 完成性能调优, 产出 $OP_DIR/<op>_tuning_report.md"
+      - "prepared_case.json 的 perf_target_us 非空时, 最终实测最优值达标 (optimized_us <= perf_target_us) 或已达硬件极限 (hw_limit_reached=true 且 tuning_report 含硬件极限论证节) 即为通过, 机检结果落盘 $OP_DIR/<op>_tune_result.json; 两者皆不成立则本条不成立, 将判 fail 触发本节点自动重试 (max_retries=5, 耗尽则工作流失败); 其他异常 (文件缺失/字段非法/回归失败) 一律 fail"
+      - "调优后回归验证 (E2E detailed_tensor_compare + layout) PASS, 精度/结构无回归"
+      - ".orchestrator_state.json 中 Stage 7 为 completed; 全流程产物契约自检 ARTIFACTS_OK"
+    approach:
+      - "核对 prepared_case.json 的 tuning_mode 为 stepwise（缺省值）。Stage 6 完成后调用 state_transition(action=start_stage, stage=7, tuning_mode=stepwise, opDir=$OP_DIR)。本任务重试时若 Stage 7 已完成，复验本次交付。"
+      - "本节点的 general-executor 加载 pypto-op-perf-tune 和 tune-orchestrator，在节点内执行各阶段并按交接摘要推进。在对应阶段加载 tune-frontend、tune-swimlane、tune-incore 或 perf-analyzer。"
+      - "INIT: 确定 perf_target_us 与 tuning_report_path=$OP_DIR/<op>_tuning_report.md; 硬性条款: gen_prompt.md/prepared_case.json 注入了 Stage 7 性能目标(perf_target_us)时必须原样采用, 不得替换来源; 终止条件与 Performance target sheet 记入 MEMORY.md。"
+      - "激活检查: 仅当 .orchestrator_state.json 显示 Stage 6 completed 才开始; 否则停止并报告。"
+      - "S1 按 pypto-op-perf-tune 完成环境与精度检查。读取 prepared_case.json 的 tune_rounds，缺省为 3。零轮用原测试验证精度，在生产配置下记录指定用例、设备和原始基线计时。S3 分析后直接进入 S5 出报告和回归。"
+      - "正轮次按 tune-orchestrator 准备代表用例集并验证 runner。S2 开启 debug_options，采集 merged_swimlane.json、machine_runtime_operator_trace.json、bubble_analysis.log。S3 生成分析报告，将四项基准指标和目标差距写入 MEMORY.md，在进入 S4 前生成匹配当前实现的 Tile 边界清单和 A4 议程。"
+      - "S4 按 tune-orchestrator 的结构变更台账门控切换阶段。FRONTEND 达标后进入 S5。未达标且有待复核的结构变更时，消耗一轮剩余预算重跑 FRONTEND。待复核项清空后，有剩余预算才进入 SWIMLANE→INCORE。每次将实测结果、台账、下一阶段和剩余预算记录到 MEMORY.md 的 Stage 7 accumulated context。"
+      - "硬件极限判定: 连续多轮优化无提升且依据 profiling 数据 (内存带宽/计算单元利用率等硬件指标) 判断当前实现已触及硬件极限时, 置 tune_result.json 的 hw_limit_reached=true, 并在 <op>_tuning_report.md 写硬件极限论证节 (哪些硬件指标饱和、为什么继续优化无空间); 禁止无论证置 true——这是诚信义务, verifier 会核对论证存在, 无论证或论证空泛判 fail。"
+      - "S5_REPORT: 先还原 debug_options (恢复 production 配置), 再生成并保存调优报告到 tuning_report_path。"
+      - "正轮次调优收尾时，对代表用例集运行精度回归，完成后继续执行最终 E2E 和布局校验。"
+      - "回归: 对最终 <op>_impl.py 重跑 E2E detailed_tensor_compare + layout check; PASS (所有输出 all_close + layout exit 0) 后调 state_transition(action=complete_stage, opDir=$OP_DIR, stage=7); FAIL 则不调 complete_stage, 诊断摘要(各 PHASE 已采纳优化/当前代码配置/failure_category/失败证据)写入 MEMORY.md 并报告。"
+      - "收尾机检落盘: 回归 PASS 后把最终实测最优值写入 $OP_DIR/<op>_tune_result.json (JSON 对象, 四个字段: optimized_us=float 最终实测最优执行时间 us, 按请求的性能口径取交付 <op>_impl.py 的实测值; perf_target_us=float|null, 与 prepared_case.json 一致; target_met=bool, perf_target_us 非空时 = optimized_us <= perf_target_us, 否则 true; hw_limit_reached=bool, 默认 false, 仅在触及硬件极限且 tuning_report 已写硬件极限论证节时置 true)。该文件是 verifier 判定性能达标的唯一机检数据来源, 必须真实测量值, 不得填估计值。"
+    procedure:
+      - "stepwise 路径逐阶段核对结构化结果的必填字段(target_met/退出原因/自核查声明/整体结果)与数值合法性(执行时间>0, 百分比在 [0,100]); target_met 以 perf_target_us 重算为准, 不只信自报; 文件类制品独立确认存在。"
+      - "stepwise 调优轮次大于 0 时，核对 Tile 边界清单、代表用例的验证与测量记录，以及 MEMORY.md 的阶段路由。检查 FRONTEND 待复核结构变更按剩余预算重审，预算耗尽时记录未解决项。"
+      - "按 pypto-op-verify 的 Stage 7 回归要求核对 E2E 逐叶 all_close 和布局检查退出码 0。零轮核对主用例及设备的原始计时、S3 基线分析和最终实测值。正轮次逐一核对 S2 三份采集文件与 S3 分析报告。"
+      - "硬件极限放行核对: hw_limit_reached=true 时, <op>_tuning_report.md 必须含硬件极限论证节, 逐条核对论证点名的饱和硬件指标与无继续优化空间的理由; 无论证或论证空泛的 true 视为伪造, 判 fail。"
+    acceptance:
+      - '执行 python3 "$SCRIPTS/check_artifacts.py" --prepared "$WORK_DIR/prepared_case.json"，退出码为 0 并输出 ARTIFACTS_OK。'
+    out_of_scope:
+      - "不修改算子公开契约 (名称/参数/shape/dtype/layout), 只调内部实现"
+      - "由 tune-orchestrator 按已登记的目标和剩余轮次判断退出"
+    depends_on: []
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 5
+    on_exhaust: exit

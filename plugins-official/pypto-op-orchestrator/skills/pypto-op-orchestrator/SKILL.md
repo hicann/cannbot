@@ -8,4 +8,6 @@ description: PyPTO 算子开发与性能调优的工作流总入口。触发：�
 - 开发/生成算子：`workflows/pypto-op-develop.yaml`
 - 性能调优：`workflows/pypto-op-tune.yaml`
 
+将用户的完整请求传给所选工作流，包括显式指定的 PANKO 策略、设备、性能主测用例和搜索预算。
+
 安装态下 yaml 位于 `<工作区>/.cannbot/plugins/pypto-op-orchestrator/workflows/`；仓内开发态位于 `plugins-official/pypto-op-orchestrator/workflows/`。

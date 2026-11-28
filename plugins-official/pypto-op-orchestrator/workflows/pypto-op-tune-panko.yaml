@@ -1,0 +1,48 @@
+# Stage 7 子图。完整开发与独立调优均在准备节点登记 tuning_mode 后选择本文件。
+nodes:
+  - id: search
+    task_type: normal
+    title: PANKO 搜索、实测和最佳候选交付
+    goal:
+      - 依据本次调优请求在指定设备实测，取得 PANKO 控制器的自然 STOP 并还原最佳实现。
+    approach:
+      - 核对 Stage 6 已完成。按 prepared_case.json 和原请求确定算子、设备、主测用例及预算，使用 state_transition(start_stage, stage=7, tuning_mode=panko) 登记搜索。已有 optimization/search_state.json 时沿用已登记的阶段和评估参数，按 pypto-op-perf-panko-manual 恢复。
+      - 首次 INIT 按该 Skill 准备用例和依赖，指定 checkpoint_handoffs=true，固定设备、用例的绝对目录和插件 hooks/pypto-op-lint 的绝对路径。测试命令从该用例目录执行。eval_budget 含基线，仅给候选次数 N 时取 N+1。
+      - 交付默认采用 AICore，设 config.delivery_latency_source=aicore。请求明确指定其他计时时设为 case_timer，并记录计时方法。仅将同口径目标用作 P_ref，其余按 maximize 搜索。
+      - 本节点按 Skill 执行 STEP。手写 CODE 通过 Task 派给独立的 general-executor，传入算子目录、实现路径和 action_id，由编辑者读取 pending_code 的原始 intent 并执行 ack-code。coder=false 时直接处理控制器写入的候选。
+      - 自然 STOP 后提交终止记录和最佳实现的 SHA-256 供验证。基线精度失败、设备或调用故障时保留现场并报告诊断。
+    procedure:
+      - 对照请求检查设备、主用例、预算以及 INIT 登记的计时来源。检查 code_handoffs 和 BO 试验能还原每次预算消耗。对每个手写候选实际比较 optimization/nodes/ 中 base_hash 与 candidate_hash 对应的源码，逐项判定改动是否实现控制器的原始 intent，并说明依据。借用其他动作 ID 的改动判失败。基线即停止时核实基线及停止条件。
+    acceptance:
+      - 每一笔已计费的手写候选都能从基准快照和候选快照复核，其实际改动实现了该 action_id 对应的控制器原始 intent。汇报比较的动作、差异及结论。
+      - 执行 python3 "$SCRIPTS/check_artifacts.py" --panko-search --prepared "$WORK_DIR/prepared_case.json"，输出 PANKO_SEARCH_OK。仅当进入节点前已有的搜索未登记计时来源时，按原请求补传 --panko-latency-source。核对本轮 run_start、自然停止、预算和最佳源码的 SHA-256。
+    out_of_scope:
+      - 算子公共接口、宿主封装、冻结评估方法、精度阈值和官方输入。阶段完成由下游交付节点登记。
+    depends_on: []
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 5
+    on_exhaust: exit
+
+  - id: deliver
+    task_type: normal
+    title: 最佳候选的精度回归和 Stage 7 验收
+    goal:
+      - 在控制器交付的实现上完成 E2E 和布局回归，交付调优报告、机器可读的实测结果及 Stage 7 完成记录。
+    approach:
+      - 读取 prepared_case.json 和搜索节点的自然 STOP。对同一最佳实现运行 test_<op>.py（逐叶 detailed_tensor_compare）及布局检查，固定请求中的设备和代表用例。失败时记录诊断。
+      - 把主用例、搜索动作、基线和候选的实测值、采纳或回退、停止原因及最佳哈希写入 <op>_tuning_report.md，关联 optimization/<op>_optimization.md。报告归档到 op_dir。
+      - 把 optimized_us、perf_target_us、target_met 和 hw_limit_reached 写入 <op>_tune_result.json。按 INIT 登记的计时来源填写 optimized_us。aicore 直接取 search_state.json 中 best_node 对应的 eval.p（微秒），case_timer 在交付实现上按请求口径实测，并在报告中保留计时证据。目标未达且报告给出基于 profiling 的硬件极限论证时才可按硬件极限放行。
+      - 完成回归后通过 state_transition(complete_stage, stage=7) 提交 OL63 门禁。重试已完成的同一阶段时复核交付物。
+    procedure:
+      - 独立核对回归命令、逐叶精度与布局、报告、交付哈希和性能口径。按 prepared_case.json 的目标重新计算达标情况。预算耗尽本身不能证明硬件极限。
+    acceptance:
+      - E2E 与布局检查均通过。逐项核对 op_dir 中的 <op>_tuning_report.md 和 <op>_tune_result.json。optimized_us 为正的有限实测值；已指定目标时，应达标或有硬件极限的实测证据。
+      - 按原请求将 LATENCY_SOURCE 设为 aicore 或 case_timer。执行 python3 "$SCRIPTS/check_artifacts.py" --prepared "$WORK_DIR/prepared_case.json" --panko-latency-source "$LATENCY_SOURCE"，输出 ARTIFACTS_OK。Stage 1 至 7 均已完成，交付源码与本次自然 STOP 一致。
+    out_of_scope:
+      - 新候选的生成、再次初始化搜索和改写已交付实现。
+    depends_on: [search]
+    executor: general-executor
+    verifier: general-verifier
+    max_retries: 5
+    on_exhaust: exit

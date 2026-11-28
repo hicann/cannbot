@@ -40,7 +40,11 @@ type StateTransitionTool = {
 async function makeTool(directory: string, worktree = directory): Promise<StateTransitionTool> {
   const plugin = await PyptoStateTransitionPlugin({
     $,
-    client: { app: { log: async () => {} } },
+    client: {
+      app: { log: async () => {} },
+      session: { get: async ({ path }: { path: { id: string } }) =>
+        ({ data: path.id === "workflow" ? { id: path.id } : { id: path.id, parentID: "workflow" } }) },
+    },
     directory,
     worktree,
     project: {},
@@ -60,13 +64,27 @@ test("harness generic executor/verifier agents may drive state_transition", asyn
           max_stage: 7,
           opDir: "custom/smoke_op",
         },
-        { agent },
+        { agent, sessionID: "workflow" },
       );
       const statePath = join(worktree, "custom", "smoke_op", ".orchestrator_state.json");
       expect(existsSync(statePath)).toBeTrue();
     } finally {
       rmSync(worktree, { recursive: true, force: true });
     }
+  }
+});
+
+test("a nested general executor cannot advance the stage while editing a candidate", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pypto-candidate-session-"));
+  try {
+    const transition = await makeTool(directory);
+    await expect(transition.execute(
+      { action: "init", stage: 1, opDir: "custom/smoke_op" },
+      { agent: "general-executor", sessionID: "candidate" },
+    )).rejects.toThrow("root workflow session");
+    expect(existsSync(join(directory, "custom", "smoke_op", ".orchestrator_state.json"))).toBeFalse();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

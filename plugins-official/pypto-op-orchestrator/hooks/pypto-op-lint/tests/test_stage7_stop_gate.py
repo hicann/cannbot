@@ -8,23 +8,13 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
-"""OL63 — Stage 7 completion gate on the PANKO path.
+"""OL63 checks controller evidence before completing PANKO Stage 7."""
 
-Two halves, and they pull in opposite directions.
-
-The gate exists because the orchestrator must not end the search on its own
-judgement that the result is good enough; on the PANKO path Stage 7 may only
-complete once panko_harness.py's stop() has written a non-empty
-progress.stop_reason.
-
-But the stepwise path -- the default, and what every operator not asking for
-PANKO is on -- never writes search_state.json at all. Keying the gate on the
-file's presence therefore blocks the default path, so it is keyed on
-stage7_tuning_mode in .orchestrator_state.json, which start_stage(7) records.
-"""
-
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from .helpers import build_stateless_op_dir, load_lint_module, run_rule
 
@@ -32,13 +22,28 @@ from .helpers import build_stateless_op_dir, load_lint_module, run_rule
 def _write_search_state(op_dir: Path, stop_reason):
     opt = op_dir / "optimization"
     opt.mkdir(parents=True, exist_ok=True)
-    progress = {"active_stage": "swimlane", "best_J": 0.17, "best_latency_us": 583.3}
+    impl_path = op_dir / "demo_impl.py"
+    impl_path.write_text("def demo(x): return x\n", encoding="utf-8")
+    digest = hashlib.sha256(impl_path.read_bytes()).hexdigest()
+    progress = {"_start_ts": 42, "best_latency_us": 583.3, "evals_used": 2}
     if stop_reason is not None:
         progress["stop_reason"] = stop_reason
     (opt / "search_state.json").write_text(
-        json.dumps({"op": "demo", "progress": progress}, ensure_ascii=False),
+        json.dumps({
+            "op": "demo",
+            "config": {"eval_budget": 2},
+            "progress": progress,
+            "best_node": "root",
+            "nodes": {"closed": [{"id": "root", "code_hash": digest, "eval": {"s": 1, "p": 583.3}}]},
+        }),
         encoding="utf-8",
     )
+    return {
+        "directive": "STOP",
+        "reason": stop_reason,
+        "run_start": 42,
+        "delivered_code_hash": digest,
+    }
 
 
 def _write_orchestrator_state(op_dir: Path, tuning_mode=None):
@@ -138,13 +143,65 @@ def test_ol63_fails_when_stop_reason_blank(tmp_path: Path):
 
 
 def test_ol63_passes_when_harness_stop_recorded(tmp_path: Path):
-    """The harness stop() decided a real stop (non-empty stop_reason) -> allow."""
+    mod = load_lint_module()
+    op_dir = build_stateless_op_dir(tmp_path, "demo")
+    _write_orchestrator_state(op_dir, "panko")
+    terminal = _write_search_state(op_dir, "global_stagnation")
+    (op_dir / "optimization/controller-terminal.json").write_text(json.dumps(terminal), encoding="utf-8")
+    finding = run_rule(mod, op_dir, "OL63", stage=7)
+    assert finding.status == "PASS"
+
+
+def test_ol63_checks_registered_aicore_time_before_completion(tmp_path: Path):
+    mod = load_lint_module()
+    op_dir = build_stateless_op_dir(tmp_path, "demo")
+    _write_orchestrator_state(op_dir, "panko")
+    terminal = _write_search_state(op_dir, "global_stagnation")
+    folder = op_dir / "optimization"
+    (folder / "controller-terminal.json").write_text(json.dumps(terminal), encoding="utf-8")
+    state_path = folder / "search_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["config"]["delivery_latency_source"] = "aicore"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    assert run_rule(mod, op_dir, "OL63", stage=7).status == "FAIL"
+    result = op_dir / "demo_tune_result.json"
+    result.write_text(json.dumps({"optimized_us": 400}), encoding="utf-8")
+    assert run_rule(mod, op_dir, "OL63", stage=7).status == "FAIL"
+    result.write_text(json.dumps({"optimized_us": 583.3}), encoding="utf-8")
+    assert run_rule(mod, op_dir, "OL63", stage=7).status == "PASS"
+
+
+def test_ol63_blocks_stop_without_controller_record(tmp_path: Path):
     mod = load_lint_module()
     op_dir = build_stateless_op_dir(tmp_path, "demo")
     _write_orchestrator_state(op_dir, "panko")
     _write_search_state(op_dir, "global_stagnation")
     finding = run_rule(mod, op_dir, "OL63", stage=7)
-    assert finding.status == "PASS"
+    assert finding.status == "FAIL"
+
+
+@pytest.mark.parametrize("problem", ("forced_stop", "stale_run", "edited_impl", "invalid_latency", "fault"))
+def test_ol63_blocks_invalid_delivery(tmp_path: Path, problem: str):
+    mod = load_lint_module()
+    op_dir = build_stateless_op_dir(tmp_path, "demo")
+    _write_orchestrator_state(op_dir, "panko")
+    terminal = _write_search_state(op_dir, "eval_budget")
+    state_path = op_dir / "optimization/search_state.json"
+    search = json.loads(state_path.read_text(encoding="utf-8"))
+    if problem == "forced_stop":
+        search["progress"]["forced_stop"] = True
+    elif problem == "stale_run":
+        terminal["run_start"] = 25
+    elif problem == "edited_impl":
+        (op_dir / "demo_impl.py").write_text("def demo(x): return -x\n", encoding="utf-8")
+    elif problem == "invalid_latency":
+        search["nodes"]["closed"][0]["eval"]["p"] = True
+    elif problem == "fault":
+        search["progress"]["stop_reason"] = terminal["reason"] = "harness_fault"
+    state_path.write_text(json.dumps(search), encoding="utf-8")
+    (op_dir / "optimization/controller-terminal.json").write_text(json.dumps(terminal), encoding="utf-8")
+    assert run_rule(mod, op_dir, "OL63", stage=7).status == "FAIL"
 
 
 def test_ol63_skips_before_stage7(tmp_path: Path):

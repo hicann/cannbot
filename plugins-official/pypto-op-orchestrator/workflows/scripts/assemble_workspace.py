@@ -65,6 +65,7 @@ REQUIRED_HOOK_FILES = (
     Path("opencode/pypto-state-transition.ts"),
     Path("opencode/lib/state-transition-core.ts"),
     Path("pypto-op-lint/pypto_op_lint.py"),
+    Path("pypto-op-lint/pypto_op_lint/panko_delivery.py"),
     Path("pypto-op-lint/rules.json"),
 )
 

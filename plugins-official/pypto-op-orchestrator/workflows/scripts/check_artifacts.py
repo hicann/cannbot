@@ -11,13 +11,15 @@ b) ``.orchestrator_state.json`` 存在且 Stage 1-7 全部 ``completed``; 存在
    failed/blocked/cancelled 状态时打印失败 stage 与
    ``stage5_phases.phase_status`` 摘要;
 c) 扁平布局检查: 禁止 custom.* 包路径导入 / modules 子模块导入 /
-   内嵌 sys.path hack.
+   内嵌 sys.path hack;
+d) 按 prepared_case 核对实测时延、达标结论和调优报告，PANKO 另核对控制器 STOP 与交付实现.
 
 任一失败即退出码 1 并逐条打印原因; 全部通过打印 ``ARTIFACTS_OK <op>`` 退出 0.
 
 用法::
 
     python3 check_artifacts.py --prepared "$WORK_DIR/prepared_case.json"
+    python3 check_artifacts.py --tune-preflight --prepared "$WORK_DIR/prepared_case.json"
     python3 check_artifacts.py --op relu --op-dir "$WORK_DIR/custom/relu"
 """
 
@@ -26,11 +28,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from select_tuning_workflow import get_tuning_mode
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks" / "pypto-op-lint"))
+from pypto_op_lint.panko_delivery import check_panko_delivery, read_tuning_result  # noqa: E402
+from pypto_op_lint.utils import _extract_section_text  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +175,32 @@ def _stage_problems(state: Optional[dict]) -> Tuple[List[str], List[str]]:
     return problems, details
 
 
-def check(op_name: str, op_dir: Path, require_bridge: bool = True) -> List[str]:
+def _verify_performance_target(target: Optional[float], result: dict, report_path: Path) -> None:
+    report = report_path.read_text(encoding="utf-8")
+    if not report.strip():
+        raise ValueError(f"调优报告为空: {report_path.name}")
+    if target is not None:
+        if type(target) not in (int, float) or not math.isfinite(target) or target <= 0:
+            raise ValueError("prepared_case.json 的 perf_target_us 应为正的有限数值或 null")
+    if ("perf_target_us" not in result or isinstance(result["perf_target_us"], bool)
+            or result["perf_target_us"] != target):
+        raise ValueError("交付结果的 perf_target_us 与 prepared_case.json 不一致")
+    latency = result["optimized_us"]
+    met = target is None or latency <= target
+    if result.get("target_met") is not met:
+        raise ValueError(f"target_met 与实测结果不一致: optimized_us={latency}, perf_target_us={target}")
+    hw_limit = result.get("hw_limit_reached", False)
+    if not isinstance(hw_limit, bool):
+        raise ValueError("hw_limit_reached 应为布尔值")
+    if hw_limit and not _extract_section_text(report, "硬件极限论证"):
+        raise ValueError("调优报告缺少有正文的硬件极限论证章节")
+    if not met and not hw_limit:
+        raise ValueError(f"优化耗时 {latency} us 超过目标 {target} us，且未确认硬件极限")
+
+
+def check(op_name: str, op_dir: Path, require_bridge: bool = True,
+          tuning_mode: Optional[str] = None, *, requested_latency_source: Optional[str] = None,
+          prepared_case: Optional[dict] = None) -> List[str]:
     """返回失败原因清单; 空列表表示全部通过.
 
     require_bridge=False (interactive 模式) 时不要求桥接产物
@@ -191,40 +225,85 @@ def check(op_name: str, op_dir: Path, require_bridge: bool = True) -> List[str]:
     stage_problems, details = _stage_problems(state)
     problems.extend(stage_problems)
     problems.extend(details)
-
+    recorded = state.get("stage7_tuning_mode", "stepwise") if isinstance(state, dict) else None
+    if tuning_mode is not None and tuning_mode != recorded:
+        problems.append("Stage 7 策略不匹配: 请求 %s, 实际 %s" % (tuning_mode, recorded))
     # c) 扁平布局契约
     for violation in find_impl_structure_violations(op_dir, op_name):
         problems.append("扁平布局违规: %s" % violation)
+    result = None
+    if prepared_case is not None:
+        try:
+            result = read_tuning_result(op_dir / f"{op_name}_tune_result.json")
+            _verify_performance_target(prepared_case.get("perf_target_us"), result,
+                                       op_dir / f"{op_name}_tuning_report.md")
+        except (OSError, ValueError, OverflowError) as error:
+            problems.append(str(error))
+            if result is None:
+                return problems
+    if recorded == "panko" or tuning_mode == "panko":
+        _, problem = check_panko_delivery(op_dir, op_name, phase="delivery",
+                                          requested_latency_source=requested_latency_source, tuning_result=result)
+        if problem:
+            problems.append(problem)
     return problems
 
 
-def _resolve_args(
-    args: argparse.Namespace,
-) -> Tuple[Optional[str], Optional[Path], bool, Optional[str]]:
-    """返回 (op_name, op_dir, 是否要求桥接产物, 错误说明)."""
+def check_panko_search(op_name: str, op_dir: Path, requested: Optional[str], *,
+                       requested_latency_source: Optional[str] = None) -> List[str]:
+    """Verify a finished search before the delivery node closes Stage 7."""
+    state = _read_orchestrator_state(op_dir)
+    if requested != "panko" or not isinstance(state, dict) or state.get("stage7_tuning_mode") != "panko":
+        return ["搜索节点要求 prepared_case.json 与 Stage 7 均登记为 panko"]
+    stages = state.get("stage_status", {})
+    if (
+        not isinstance(stages, dict)
+        or stages.get("6") != "completed"
+        or stages.get("7") not in ("in_progress", "completed")
+    ):
+        return ["PANKO 交付需要已完成的 Stage 6 和已启动的 Stage 7"]
+    _, problem = check_panko_delivery(
+        op_dir, op_name, phase="search", requested_latency_source=requested_latency_source
+    )
+    return [problem] if problem else []
+
+
+def check_tune_preflight(op_name: str, op_dir: Path) -> List[str]:
+    """Check the starting checkpoint of a new tune-only job before its first Stage 7."""
+    state = _read_orchestrator_state(op_dir)
+    stages = state.get("stage_status") if isinstance(state, dict) else None
+    if not isinstance(stages, dict) or stages.get("6") != "completed":
+        return ["独立调优需要已验收的 Stage 6 检查点"]
+    problems = []
+    if stages.get("7") not in ("pending", "in_progress"):
+        problems.append("新调优任务需从 Stage 6 检查点进入 Stage 7")
+    optimization = op_dir / "optimization"
+    if optimization.is_dir():
+        previous = next(optimization.iterdir(), None)
+        if previous is not None:
+            problems.append(f"请先归档上次调优产物: optimization/{previous.name}")
+    for name in (f"{op_name}_tune_result.json", f"{op_name}_tuning_report.md"):
+        if (op_dir / name).exists():
+            problems.append(f"请先归档上次调优产物: {name}")
+    return problems
+
+
+def _resolve_args(args: argparse.Namespace) -> Tuple[str, Path, Optional[dict]]:
     if args.prepared:
+        path = Path(args.prepared).resolve()
         try:
-            data = json.loads(Path(args.prepared).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return (
-                None,
-                None,
-                True,
-                "prepared_case.json 读取失败 (%s): %s" % (args.prepared, exc),
-            )
-        op_name = data.get("op")
-        op_dir = data.get("op_dir")
-        if not op_name or not op_dir:
-            return (
-                None,
-                None,
-                True,
-                "prepared_case.json 缺少 op/op_dir 字段: %s" % args.prepared,
-            )
-        return str(op_name), Path(op_dir), data.get("mode") == "staged", None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"prepared_case.json 读取失败 ({path}): {error}") from error
+        if not isinstance(data, dict):
+            raise ValueError("prepared_case.json 必须是 JSON 对象")
+        op_name, op_dir = data.get("op"), data.get("op_dir")
+        if not all(isinstance(value, str) and value for value in (op_name, op_dir)):
+            raise ValueError(f"prepared_case.json 缺少有效的 op/op_dir 字段: {path}")
+        return op_name, path.parent / op_dir, data
     if args.op and args.op_dir:
-        return args.op, Path(args.op_dir), True, None
-    return None, None, True, "必须提供 --prepared PATH 或 --op NAME --op-dir PATH"
+        return args.op, Path(args.op_dir), None
+    raise ValueError("必须提供 --prepared PATH 或 --op NAME --op-dir PATH")
 
 
 def main() -> int:
@@ -238,20 +317,46 @@ def main() -> int:
     )
     parser.add_argument("--op", default=None, help="算子名")
     parser.add_argument("--op-dir", default=None, help="算子产物目录")
+    parser.add_argument("--panko-latency-source", choices=("aicore", "case_timer"),
+                        help="按原始请求核对 PANKO 计时来源，也可复核未登记来源的已有搜索")
+    phase = parser.add_mutually_exclusive_group()
+    phase.add_argument("--tune-preflight", action="store_true", help="核对新调优任务的输入检查点")
+    phase.add_argument("--panko-search", action="store_true", help="交付节点开始前核验 PANKO 搜索")
     args = parser.parse_args()
 
-    op_name, op_dir, require_bridge, err = _resolve_args(args)
-    if err:
-        logger.error("[check_artifacts] 错误: %s", err)
+    try:
+        op_name, op_dir, prepared = _resolve_args(args)
+        tuning_mode = get_tuning_mode(prepared) if prepared is not None else None
+    except ValueError as error:
+        logger.error("[check_artifacts] 错误: %s", error)
         return 2
-    problems = check(op_name, op_dir, require_bridge=require_bridge)
+    if args.tune_preflight:
+        if not args.prepared:
+            parser.error("--tune-preflight 需要 --prepared 以定位本次工作区")
+        custom_root = Path(args.prepared).resolve().parent / "custom"
+        if custom_root not in op_dir.resolve().parents:
+            logger.error("[check_artifacts] FAIL: 请在当前工作区的 custom/ 下准备调优副本")
+            return 1
+        problems = check_tune_preflight(op_name, op_dir)
+        success = "TUNE_PREFLIGHT_OK"
+    elif args.panko_search:
+        if not args.prepared:
+            parser.error("--panko-search 需要 --prepared 以核对请求策略")
+        problems = check_panko_search(op_name, op_dir, tuning_mode,
+                                      requested_latency_source=args.panko_latency_source)
+        success = "PANKO_SEARCH_OK"
+    else:
+        require_bridge = prepared is None or prepared.get("mode") == "staged"
+        problems = check(op_name, op_dir, require_bridge=require_bridge, tuning_mode=tuning_mode,
+                         requested_latency_source=args.panko_latency_source, prepared_case=prepared)
+        success = "ARTIFACTS_OK"
     if problems:
         for item in problems:
             logger.error("[check_artifacts] FAIL: %s", item)
         return 1
     # 契约输出: 工作流 verify 依赖 grep "ARTIFACTS_OK";
     # stdout 契约输出, 用 os.write 直写 fd 1 而非 print/logging (修复 G.LOG.02)
-    os.write(1, ("ARTIFACTS_OK %s\n" % op_name).encode())
+    os.write(1, ("%s %s\n" % (success, op_name)).encode())
     return 0
 
 

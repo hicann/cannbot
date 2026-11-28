@@ -132,5 +132,16 @@ python3 "$WORK_DIR/.agents/skills/workflow-orchestrator/scripts/orchestrator.py"
 仅执行性能调优时，将工作流文件改为 `pypto-op-tune.yaml`，
 并在 `--prompt` 中提供算子目录及调优要求。
 
-中断恢复时，使用相同的工作流、工作目录和 provider，
-省略原命令中的 `--prompt` 及其参数。
+两个入口均支持显式请求 PANKO。例如「用 PANKO 调优已有算子
+`custom/relu`，设备 0，搜索预算 `eval_budget=4`（含基线）」。
+两个入口都读取 `prepared_case.json`。显式请求 PANKO 时使用 `pypto-op-tune-panko.yaml`，默认使用 `pypto-op-tune-stepwise.yaml`。
+
+PANKO 需要在运行 PyPTO 的 Python 环境中安装
+`python3 -m pip install -r .agents/skills/pypto-op-perf-panko-manual/requirements.txt`。
+搜索轨迹和终止记录保存在算子的 `optimization/` 目录中。
+
+中断后在原工作目录使用相同的工作流和 provider，省略 `--prompt` 及其参数。保留 `.workflow/`、`prepared_case.json` 和算子目录下的 `optimization/`，以便恢复已选候选、测量记录和停止状态。
+
+发起独立调优任务时，使用新的工作目录。安装插件，将已有算子目录复制到
+新工作目录的 `custom/` 下，并传入本次的设备、主测用例、策略和预算。
+预检会在副本中归档上一轮的搜索与报告。

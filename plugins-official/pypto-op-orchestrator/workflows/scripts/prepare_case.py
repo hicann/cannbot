@@ -35,10 +35,10 @@ device_id/性能目标/调优轮次等用例事实。本模式只做核对 (veri
   传入 (由节点 agent 从 $USER_PROMPT 解析, 提示词未给出时按算子语义自行
   拟定合法 Python 标识符; 本脚本不解析需求文本提取任何字段)。
 
-``--verify`` 复核语义: ``prepared_case.json`` 已存在时只校验其字段齐全且
-引用的路径存在非空 (staged 模式要求 task_desc 与 gen_prompt 非空,
-interactive 模式不要求), 缺一则退出码 1 并打印缺失清单; 不存在时按上述
-staged 入口处理 (核对调用方预写产物并合成记录)。
+已有 ``prepared_case.json`` 时，``--verify`` 校验记录字段及其引用的产物。staged
+模式要求 task_desc 与 gen_prompt 非空，interactive 模式下两者可为空。复核失败返回 1
+并列出问题。旧记录缺少策略时，复核通过后补写显式传入的 ``--tuning-mode``。
+记录不存在时，按上述 staged 入口核对调用方预写的产物并合成记录。
 
 用法::
 
@@ -86,6 +86,7 @@ _PREPARED_KEYS = (
 )
 
 _MODES = ("staged", "interactive")
+_TUNING_MODES = ("stepwise", "panko")
 
 # staged 模式调用方必须预写到 $OP_DIR 的三个产物
 _STAGED_ARTIFACTS = ("REQUIRE.md", "task_desc.py", "gen_prompt.md")
@@ -101,26 +102,10 @@ def _fail(msg: str, code: int = 2) -> int:
 # ────────────────────────────────────────────────────────────
 
 
-def verify_prepared(work_dir: Path) -> List[str]:
-    """复核已有 prepared_case.json; 返回缺失/无效项清单, 空列表表示通过."""
+def _prepared_file_problems(data: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
-    prepared_path = work_dir / "prepared_case.json"
-    if not prepared_path.is_file():
-        return ["prepared_case.json 不存在: %s" % prepared_path]
-    try:
-        data = json.loads(prepared_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return ["prepared_case.json 解析失败: %s" % exc]
-    for key in _PREPARED_KEYS:
-        if key not in data:
-            problems.append("prepared_case.json 缺字段: %s" % key)
-    mode = data.get("mode")
-    if mode not in _MODES:
-        problems.append(
-            "prepared_case.json mode 非法: %r (允许 %s)" % (mode, "/".join(_MODES))
-        )
     file_keys = ["require"]
-    if mode == "staged":
+    if data.get("mode") == "staged":
         # interactive 模式无 task_desc, gen_prompt 为可选占位; staged 模式两者必需
         file_keys.extend(["task_desc", "gen_prompt"])
     elif data.get("gen_prompt"):
@@ -135,9 +120,41 @@ def verify_prepared(work_dir: Path) -> List[str]:
             problems.append("文件不存在 (%s): %s" % (key, path))
         elif path.stat().st_size == 0:
             problems.append("文件为空 (%s): %s" % (key, path))
+    return problems
+
+
+def verify_prepared(work_dir: Path, requested_tuning_mode: Optional[str] = None) -> List[str]:
+    """返回已有记录的问题清单。若记录有效且缺少策略，补写显式请求的策略。"""
+    problems: List[str] = []
+    prepared_path = work_dir / "prepared_case.json"
+    if not prepared_path.is_file():
+        return ["prepared_case.json 不存在: %s" % prepared_path]
+    try:
+        data = json.loads(prepared_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return ["prepared_case.json 解析失败: %s" % exc]
+    if not isinstance(data, dict):
+        return ["prepared_case.json 必须是 JSON 对象"]
+    tuning_mode = data.get("tuning_mode", requested_tuning_mode or "stepwise")
+    if tuning_mode not in _TUNING_MODES:
+        problems.append("未知 tuning_mode: %r" % tuning_mode)
+    elif requested_tuning_mode and requested_tuning_mode != tuning_mode:
+        problems.append("请求的调优策略 %s 与已登记的 %s 不一致" % (requested_tuning_mode, tuning_mode))
+    for key in _PREPARED_KEYS:
+        if key not in data:
+            problems.append("prepared_case.json 缺字段: %s" % key)
+    mode = data.get("mode")
+    if mode not in _MODES:
+        problems.append(
+            "prepared_case.json mode 非法: %r (允许 %s)" % (mode, "/".join(_MODES))
+        )
+    problems.extend(_prepared_file_problems(data))
     op_dir = data.get("op_dir")
     if op_dir and not Path(op_dir).is_dir():
         problems.append("op_dir 不存在: %s" % op_dir)
+    if not problems and requested_tuning_mode and "tuning_mode" not in data:
+        data["tuning_mode"] = requested_tuning_mode
+        _write_prepared_json(data, work_dir)
     return problems
 
 
@@ -215,6 +232,7 @@ def _run_verify_staged(args: argparse.Namespace, work_dir: Path) -> int:
         "device_id": args.device_id,
         "perf_target_us": args.perf_target_us,
         "tune_rounds": args.tune_rounds,
+        "tuning_mode": args.tuning_mode or "stepwise",
         "mode": "staged",
     }
     _write_prepared_json(prepared, work_dir)
@@ -348,6 +366,8 @@ def _add_interactive_args(parser: argparse.ArgumentParser) -> None:
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """staged/interactive 共用的工作区、用例与调优参数。"""
     parser.add_argument("--work-dir", required=True, type=Path, help="工作流 $WORK_DIR")
+    parser.add_argument("--tuning-mode", choices=_TUNING_MODES,
+                        help="Stage 7 调优策略，新用例缺省 stepwise；复核时与已登记的策略比较")
     parser.add_argument(
         "--op-dir",
         type=Path,
@@ -400,7 +420,7 @@ def _run_verify(args: argparse.Namespace, work_dir: Path) -> int:
     if not prepared_path.is_file():
         # staged 模式入口: 调用方已预写三产物, 本脚本只核对并合成记录
         return _run_verify_staged(args, work_dir)
-    problems = verify_prepared(work_dir)
+    problems = verify_prepared(work_dir, args.tuning_mode)
     if problems:
         for item in problems:
             logger.error("[prepare_case] 缺失: %s", item)
@@ -464,6 +484,7 @@ def _run_from_require(args: argparse.Namespace, work_dir: Path) -> int:
         "device_id": args.device_id,
         "perf_target_us": args.perf_target_us,
         "tune_rounds": args.tune_rounds,
+        "tuning_mode": args.tuning_mode or "stepwise",
         "mode": "interactive",
     }
     _write_prepared_json(prepared, work_dir)
